@@ -32,7 +32,7 @@ use pathfinder_renderer::post::{DEFRINGING_KERNEL_CORE_GRAPHICS, STEM_DARKENING_
 use pathfinder_renderer::scene::Scene;
 use pathfinder_renderer::z_buffer::ZBuffer;
 use pathfinder_svg::BuiltSVG;
-use pathfinder_ui::{MousePosition, UIEvent};
+use pathfinder_ui::UIEvent;
 use rayon::ThreadPoolBuilder;
 use std::f32::consts::FRAC_PI_4;
 use std::fs::File;
@@ -48,7 +48,6 @@ use usvg::{Options as UsvgOptions, Tree};
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
-const MOUSELOOK_ROTATION_SPEED: f32 = 0.007;
 const CAMERA_VELOCITY: f32 = 0.02;
 
 // How much the scene is scaled when a scale gesture is performed.
@@ -87,11 +86,9 @@ pub struct DemoApp<W> where W: Window {
     camera: Camera,
     frame_counter: u32,
     pending_screenshot_path: Option<PathBuf>,
-    mouselook_enabled: bool,
     dirty: bool,
     expire_message_event_id: u32,
     message_epoch: u32,
-    last_mouse_position: Point2DI32,
 
     current_frame: Option<Frame>,
 
@@ -156,11 +153,9 @@ impl<W> DemoApp<W> where W: Window {
             camera,
             frame_counter: 0,
             pending_screenshot_path: None,
-            mouselook_enabled: false,
             dirty: true,
             expire_message_event_id,
             message_epoch,
-            last_mouse_position: Point2DI32::default(),
 
             current_frame: None,
 
@@ -236,7 +231,7 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     fn handle_events(&mut self, events: Vec<Event>) -> Vec<UIEvent> {
-        let mut ui_events = vec![];
+        let ui_events = vec![];
         self.dirty = false;
 
         for event in events {
@@ -253,30 +248,9 @@ impl<W> DemoApp<W> where W: Window {
                     self.renderer.set_main_framebuffer_size(self.window_size.device_size());
                     self.dirty = true;
                 }
-                Event::MouseDown(new_position) => {
-                    let mouse_position = self.process_mouse_position(new_position);
-                    ui_events.push(UIEvent::MouseDown(mouse_position));
-                }
-                Event::MouseMoved(new_position) if self.mouselook_enabled => {
-                    let mouse_position = self.process_mouse_position(new_position);
-                    if let Camera::ThreeD { ref mut transform, .. } = self.camera {
-                        let rotation = mouse_position.relative
-                                                     .to_f32()
-                                                     .scale(MOUSELOOK_ROTATION_SPEED);
-                        transform.yaw += rotation.x();
-                        transform.pitch += rotation.y();
-                        self.dirty = true;
-                    }
-                }
-                Event::MouseDragged(new_position) => {
-                    let mouse_position = self.process_mouse_position(new_position);
-                    ui_events.push(UIEvent::MouseDragged(mouse_position));
-                    self.dirty = true;
-                }
                 Event::Zoom(d_dist) => {
                     if let Camera::TwoD(ref mut transform) = self.camera {
-                        let position = get_mouse_position(&self.window,
-                                                          self.window_size.backing_scale_factor);
+                        let position = get_mouse_position(self.window_size.backing_scale_factor);
                         *transform = transform.post_translate(-position);
                         let scale_delta = 1.0 + d_dist * CAMERA_SCALE_SPEED_2D;
                         *transform = transform.post_scale(Point2DF32::splat(scale_delta));
@@ -361,13 +335,6 @@ impl<W> DemoApp<W> where W: Window {
         ui_events
     }
 
-    fn process_mouse_position(&mut self, new_position: Point2DI32) -> MousePosition {
-        let absolute = new_position.scale(self.window_size.backing_scale_factor as i32);
-        let relative = absolute - self.last_mouse_position;
-        self.last_mouse_position = absolute;
-        MousePosition { absolute, relative }
-    }
-
     pub fn draw_scene(&mut self, render_scene_index: u32) {
         self.draw_environment(render_scene_index);
         self.render_vector_scene(render_scene_index);
@@ -410,7 +377,7 @@ impl<W> DemoApp<W> where W: Window {
         }
 
         self.renderer.debug_ui.ui.mouse_position =
-            get_mouse_position(&self.window, self.window_size.backing_scale_factor);
+            get_mouse_position(self.window_size.backing_scale_factor);
         self.ui.show_text_effects = self.scene_is_monochrome;
 
         let mut ui_action = UIAction::None;
@@ -438,15 +405,6 @@ impl<W> DemoApp<W> where W: Window {
 
         for ui_event in frame.ui_events {
             match ui_event {
-                UIEvent::MouseDown(_) if self.camera.is_3d() => {
-                    // If nothing handled the mouse-down event, toggle mouselook.
-                    self.mouselook_enabled = !self.mouselook_enabled;
-                }
-                UIEvent::MouseDragged(position) => {
-                    if let Camera::TwoD(ref mut transform) = self.camera {
-                        *transform = transform.post_translate(position.relative.to_f32());
-                    }
-                }
                 _ => {}
             }
         }
@@ -918,8 +876,8 @@ fn scale_factor_for_view_box(view_box: RectF32) -> f32 {
     1.0 / f32::min(view_box.size().x(), view_box.size().y())
 }
 
-fn get_mouse_position<W>(window: &W, scale_factor: f32) -> Point2DF32 where W: Window {
-    window.mouse_position().to_f32().scale(scale_factor)
+fn get_mouse_position(scale_factor: f32) -> Point2DF32 {
+    Point2DI32::new(0, 0).to_f32().scale(scale_factor)
 }
 
 fn get_svg_building_message(built_svg: &BuiltSVG) -> String {

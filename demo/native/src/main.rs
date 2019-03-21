@@ -68,8 +68,7 @@ impl Window for WindowImpl {
     }
 
     fn mouse_position(&self) -> Point2DI32 {
-        let mouse_state = self.event_pump.mouse_state();
-        Point2DI32::new(mouse_state.x(), mouse_state.y())
+        Point2DI32::new(0, 0)
     }
 
     fn present(&self) {
