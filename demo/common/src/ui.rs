@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::{Mode, Options};
 use pathfinder_geometry::basic::point::Point2DI32;
 use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_gpu::Device;
@@ -18,8 +17,6 @@ use pathfinder_ui::{TOOLTIP_HEIGHT, WINDOW_COLOR};
 
 pub struct DemoUI {
     // FIXME(pcwalton): Factor the below out into a model class.
-
-    pub mode: Mode,
     pub dark_background_enabled: bool,
     pub gamma_correction_effect_enabled: bool,
     pub stem_darkening_effect_enabled: bool,
@@ -29,9 +26,8 @@ pub struct DemoUI {
 }
 
 impl DemoUI {
-    pub fn new(options: Options) -> DemoUI {
+    pub fn new() -> DemoUI {
         DemoUI {
-            mode: options.mode,
             dark_background_enabled: false,
             gamma_correction_effect_enabled: true,
             stem_darkening_effect_enabled: true,

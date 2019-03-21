@@ -13,12 +13,11 @@
 use crate::device::{GroundLineVertexArray, GroundProgram, GroundSolidVertexArray};
 use crate::ui::DemoUI;
 use crate::window::{Event, Window, WindowSize};
-use clap::{App, Arg};
 use image::ColorType;
-use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32, Point3DF32};
+use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::{RectF32, RectI32};
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
-use pathfinder_geometry::basic::transform3d::{Perspective, Transform3DF32};
+use pathfinder_geometry::basic::transform3d::{Transform3DF32};
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gl::GLDevice;
 use pathfinder_gpu::resources::ResourceLoader;
@@ -32,21 +31,14 @@ use pathfinder_renderer::scene::Scene;
 use pathfinder_renderer::z_buffer::ZBuffer;
 use pathfinder_svg::BuiltSVG;
 use pathfinder_ui::UIEvent;
-use rayon::ThreadPoolBuilder;
-use std::f32::consts::FRAC_PI_4;
 use std::iter;
-use std::panic;
 use std::path::PathBuf;
-use std::process;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use usvg::{Options as UsvgOptions, Tree};
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
-
-const NEAR_CLIP_PLANE: f32 = 0.01;
-const FAR_CLIP_PLANE:  f32 = 10.0;
 
 const LIGHT_BG_COLOR:     ColorU = ColorU { r: 248, g: 248, b: 248, a: 255 };
 const DARK_BG_COLOR:      ColorU = ColorU { r: 32,  g: 32,  b: 32,  a: 255 };
@@ -97,9 +89,8 @@ impl<W> DemoApp<W> where W: Window {
 
         let device = GLDevice::new(window.gl_version());
         let resources = window.resource_loader();
-        let options = Options::get();
 
-        let view_box_size = view_box_size(options.mode, &window_size);
+        let view_box_size = window_size.device_size();
 
         let built_svg = load_scene(resources);
         let message = get_svg_building_message(&built_svg);
@@ -110,14 +101,10 @@ impl<W> DemoApp<W> where W: Window {
                                      resources,
                                      RectI32::new(Point2DI32::default(), view_box_size),
                                      window_size.device_size());
-        let scene_thread_proxy = SceneThreadProxy::new(built_svg.scene, options.clone());
+        let scene_thread_proxy = SceneThreadProxy::new(built_svg.scene);
         scene_thread_proxy.set_drawable_size(view_box_size);
 
-        let camera = if options.mode == Mode::TwoD {
-            Camera::new_2d(scene_view_box, view_box_size)
-        } else {
-            Camera::new_3d(scene_view_box)
-        };
+        let camera = Camera::new_2d(scene_view_box, view_box_size);
 
         let ground_program = GroundProgram::new(&renderer.device, resources);
         let ground_solid_vertex_array =
@@ -127,7 +114,7 @@ impl<W> DemoApp<W> where W: Window {
         let ground_line_vertex_array = GroundLineVertexArray::new(&renderer.device,
                                                                   &ground_program);
 
-        let mut ui = DemoUI::new(options);
+        let mut ui = DemoUI::new();
         let mut message_epoch = 0;
         emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
 
@@ -180,16 +167,7 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     fn build_scene(&mut self) {
-        let view_box_size = view_box_size(self.ui.mode, &self.window_size);
-
         let render_transform = match self.camera {
-            Camera::ThreeD { ref mut transform, ref mut velocity } => {
-                if transform.offset(*velocity) {
-                    self.dirty = true;
-                }
-                let perspective = transform.to_perspective(view_box_size);
-                RenderTransform::Perspective(perspective)
-            }
             Camera::TwoD(transform) => RenderTransform::Transform2D(transform),
         };
 
@@ -197,7 +175,7 @@ impl<W> DemoApp<W> where W: Window {
         let frame_count = if is_first_frame { 2 } else { 1 };
 
         for _ in 0..frame_count {
-            let viewport_count = self.ui.mode.viewport_count();
+            let viewport_count = 1;
             let render_transforms = iter::repeat(render_transform.clone()).take(viewport_count)
                                                                           .collect();
             self.scene_thread_proxy.sender.send(MainToSceneMsg::Build(BuildOptions {
@@ -227,7 +205,7 @@ impl<W> DemoApp<W> where W: Window {
                 }
                 Event::WindowResized(new_size) => {
                     self.window_size = new_size;
-                    let view_box_size = view_box_size(self.ui.mode, &self.window_size);
+                    let view_box_size = self.window_size.device_size();
                     self.scene_thread_proxy.set_drawable_size(view_box_size);
                     self.renderer.set_main_framebuffer_size(self.window_size.device_size());
                     self.dirty = true;
@@ -294,20 +272,6 @@ impl<W> DemoApp<W> where W: Window {
                        &mut self.renderer.debug_ui);
 
         frame.ui_events = self.renderer.debug_ui.ui.event_queue.drain();
-
-        // Switch camera mode (2D/3D) if requested.
-        //
-        // FIXME(pcwalton): This mess should really be an MVC setup.
-        match (&self.camera, self.ui.mode) {
-            (&Camera::TwoD { .. }, Mode::ThreeD) | (&Camera::TwoD { .. }, Mode::VR) => {
-                self.camera = Camera::new_3d(self.scene_view_box);
-            }
-            (&Camera::ThreeD { .. }, Mode::TwoD) => {
-                let drawable_size = self.window_size.device_size();
-                self.camera = Camera::new_2d(self.scene_view_box, drawable_size);
-            }
-            _ => {}
-        }
 
         for ui_event in frame.ui_events {
             match ui_event {
@@ -393,7 +357,7 @@ impl<W> DemoApp<W> where W: Window {
         let render_msg = &self.current_frame.as_ref().unwrap().render_msg;
         let built_scene = &render_msg.render_scenes[viewport_index as usize].built_scene;
 
-        let view_box_size = view_box_size(self.ui.mode, &self.window_size);
+        let view_box_size = self.window_size.device_size();
         let viewport_origin_x = viewport_index as i32 * view_box_size.x();
         let viewport = RectI32::new(Point2DI32::new(viewport_origin_x, 0), view_box_size);
         self.renderer.set_viewport(viewport);
@@ -410,11 +374,7 @@ impl<W> DemoApp<W> where W: Window {
             self.renderer.disable_subpixel_aa();
         }
 
-        if self.ui.mode == Mode::TwoD {
-            self.renderer.disable_depth();
-        } else {
-            self.renderer.enable_depth();
-        }
+        self.renderer.disable_depth();
 
         self.renderer.render_scene(&built_scene);
     }
@@ -442,10 +402,10 @@ struct SceneThreadProxy {
 }
 
 impl SceneThreadProxy {
-    fn new(scene: Scene, options: Options) -> SceneThreadProxy {
+    fn new(scene: Scene) -> SceneThreadProxy {
         let (main_to_scene_sender, main_to_scene_receiver) = mpsc::channel();
         let (scene_to_main_sender, scene_to_main_receiver) = mpsc::channel();
-        SceneThread::new(scene, scene_to_main_sender, main_to_scene_receiver, options);
+        SceneThread::new(scene, scene_to_main_sender, main_to_scene_receiver);
         SceneThreadProxy { sender: main_to_scene_sender, receiver: scene_to_main_receiver }
     }
 
@@ -458,15 +418,13 @@ struct SceneThread {
     scene: Scene,
     sender: Sender<SceneToMainMsg>,
     receiver: Receiver<MainToSceneMsg>,
-    options: Options,
 }
 
 impl SceneThread {
     fn new(scene: Scene,
            sender: Sender<SceneToMainMsg>,
-           receiver: Receiver<MainToSceneMsg>,
-           options: Options) {
-        thread::spawn(move || (SceneThread { scene, sender, receiver, options }).run());
+           receiver: Receiver<MainToSceneMsg>) {
+        thread::spawn(move || (SceneThread { scene, sender, receiver }).run());
     }
 
     fn run(mut self) {
@@ -482,8 +440,7 @@ impl SceneThread {
                                                      .map(|render_transform| {
                         let built_scene = build_scene(&self.scene,
                                                       &build_options,
-                                                      (*render_transform).clone(),
-                                                      self.options.jobs);
+                                                      (*render_transform).clone());
                         RenderScene { built_scene, transform: (*render_transform).clone() }
                     }).collect();
                     let tile_time = Instant::now() - start_time;
@@ -514,64 +471,6 @@ pub struct RenderScene {
     transform: RenderTransform,
 }
 
-#[derive(Clone)]
-pub struct Options {
-    jobs: Option<usize>,
-    mode: Mode,
-}
-
-impl Options {
-    fn get() -> Options {
-        let matches = App::new("tile-svg")
-            .arg(
-                Arg::with_name("jobs")
-                    .short("j")
-                    .long("jobs")
-                    .value_name("THREADS")
-                    .takes_value(true)
-                    .help("Number of threads to use"),
-            )
-            .arg(Arg::with_name("3d").short("3").long("3d").help("Run in 3D").conflicts_with("vr"))
-            .arg(Arg::with_name("vr").short("V").long("vr").help("Run in VR").conflicts_with("3d"))
-            .arg(Arg::with_name("INPUT").help("Path to the SVG file to render").index(1))
-            .get_matches();
-
-        let jobs: Option<usize> = matches
-            .value_of("jobs")
-            .map(|string| string.parse().unwrap());
-
-        let mode = if matches.is_present("3d") {
-            Mode::ThreeD
-        } else if matches.is_present("vr") {
-            Mode::VR
-        } else {
-            Mode::TwoD
-        };
-
-        // Set up Rayon.
-        let mut thread_pool_builder = ThreadPoolBuilder::new();
-        if let Some(jobs) = jobs {
-            thread_pool_builder = thread_pool_builder.num_threads(jobs);
-        }
-        thread_pool_builder.build_global().unwrap();
-
-        Options { jobs, mode }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Mode {
-    TwoD   = 0,
-    ThreeD = 1,
-    VR     = 2,
-}
-
-impl Mode {
-    fn viewport_count(self) -> usize {
-        match self { Mode::TwoD | Mode::ThreeD => 1, Mode::VR => 2 }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct RenderStats {
     rendering_time: Option<Duration>,
@@ -586,8 +485,7 @@ fn load_scene(resource_loader: &dyn ResourceLoader) -> BuiltSVG {
 
 fn build_scene(scene: &Scene,
                build_options: &BuildOptions,
-               render_transform: RenderTransform,
-               jobs: Option<usize>)
+               render_transform: RenderTransform)
                -> BuiltScene {
     let z_buffer = ZBuffer::new(scene.view_box);
 
@@ -606,21 +504,7 @@ fn build_scene(scene: &Scene,
     let built_options = render_options.prepare(scene.bounds);
     let quad = built_options.quad();
 
-    let built_objects = panic::catch_unwind(|| {
-         match jobs {
-            Some(1) => scene.build_objects_sequentially(built_options, &z_buffer),
-            _ => scene.build_objects(built_options, &z_buffer),
-        }
-    });
-
-    let built_objects = match built_objects {
-        Ok(built_objects) => built_objects,
-        Err(_) => {
-            eprintln!("Scene building crashed! Dumping scene:");
-            println!("{:?}", scene);
-            process::exit(1);
-        }
-    };
+    let built_objects = scene.build_objects_sequentially(built_options, &z_buffer);
 
     let mut built_scene = BuiltScene::new(scene.view_box, &quad, scene.objects.len() as u32);
     built_scene.shaders = scene.build_shaders();
@@ -636,7 +520,6 @@ fn build_scene(scene: &Scene,
 
 enum Camera {
     TwoD(Transform2DF32),
-    ThreeD { transform: CameraTransform3D, velocity: Point3DF32 },
 }
 
 impl Camera {
@@ -645,62 +528,6 @@ impl Camera {
             scale_factor_for_view_box(view_box);
         let origin = drawable_size.to_f32().scale(0.5) - view_box.size().scale(scale * 0.5);
         Camera::TwoD(Transform2DF32::from_scale(&Point2DF32::splat(scale)).post_translate(origin))
-    }
-
-    fn new_3d(view_box: RectF32) -> Camera {
-        Camera::ThreeD {
-            transform: CameraTransform3D::new(view_box),
-            velocity: Point3DF32::default(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct CameraTransform3D {
-    position: Point3DF32,
-    yaw: f32,
-    pitch: f32,
-    scale: f32,
-}
-
-impl CameraTransform3D {
-    fn new(view_box: RectF32) -> CameraTransform3D {
-        let scale = scale_factor_for_view_box(view_box);
-        CameraTransform3D {
-            position: Point3DF32::new(0.5 * view_box.max_x(),
-                                      -0.5 * view_box.max_y(),
-                                      1.5 / scale,
-                                      1.0),
-            yaw: 0.0,
-            pitch: 0.0,
-            scale,
-        }
-    }
-
-    fn offset(&mut self, vector: Point3DF32) -> bool {
-        let update = !vector.is_zero();
-        if update {
-            let rotation = Transform3DF32::from_rotation(-self.yaw, -self.pitch, 0.0);
-            self.position = self.position + rotation.transform_point(vector);
-        }
-        update
-    }
-
-    fn to_perspective(&self, drawable_size: Point2DI32) -> Perspective {
-        let aspect = drawable_size.x() as f32 / drawable_size.y() as f32;
-        let mut transform =
-            Transform3DF32::from_perspective(FRAC_PI_4, aspect, NEAR_CLIP_PLANE, FAR_CLIP_PLANE);
-
-        transform = transform.post_mul(&Transform3DF32::from_rotation(self.yaw, self.pitch, 0.0));
-        transform = transform.post_mul(&Transform3DF32::from_uniform_scale(2.0 * self.scale));
-        transform = transform.post_mul(&Transform3DF32::from_translation(-self.position.x(),
-                                                                         -self.position.y(),
-                                                                         -self.position.z()));
-
-        // Flip Y.
-        transform = transform.post_mul(&Transform3DF32::from_scale(1.0, -1.0, 1.0));
-
-        Perspective::new(&transform, drawable_size)
     }
 }
 
@@ -731,14 +558,6 @@ fn emit_message<W>(ui: &mut DemoUI,
         thread::sleep(Duration::from_secs(MESSAGE_TIMEOUT_SECS));
         W::push_user_event(expire_message_event_id, expected_epoch);
     });
-}
-
-fn view_box_size(mode: Mode, window_size: &WindowSize) -> Point2DI32 {
-    let window_drawable_size = window_size.device_size();
-    match mode {
-        Mode::TwoD | Mode::ThreeD => window_drawable_size,
-        Mode::VR => Point2DI32::new(window_drawable_size.x() / 2, window_drawable_size.y()),
-    }
 }
 
 struct Frame {
