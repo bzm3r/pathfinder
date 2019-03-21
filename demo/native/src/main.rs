@@ -9,8 +9,6 @@
 // except according to those terms.
 
 //! A demo app for Pathfinder using SDL 2.
-
-use nfd::Response;
 use pathfinder_demo::DemoApp;
 use pathfinder_demo::window::{Event, Window, WindowSize};
 use pathfinder_geometry::basic::point::Point2DI32;
@@ -20,7 +18,6 @@ use sdl2::{EventPump, EventSubsystem, Sdl, VideoSubsystem};
 use sdl2::event::{Event as SDLEvent, WindowEvent};
 use sdl2::video::{GLContext, GLProfile, Window as SDLWindow};
 use sdl2_sys::{SDL_Event, SDL_UserEvent};
-use std::path::PathBuf;
 use std::ptr;
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1067;
@@ -57,8 +54,6 @@ struct WindowImpl {
     #[allow(dead_code)]
     gl_context: GLContext,
     resource_loader: FilesystemResourceLoader,
-    selected_file: Option<PathBuf>,
-    open_svg_message_type: u32,
 }
 
 impl Window for WindowImpl {
@@ -91,26 +86,12 @@ impl Window for WindowImpl {
             sdl2_sys::SDL_PushEvent(&mut user_event as *mut SDL_UserEvent as *mut SDL_Event);
         }
     }
-
-    fn present_open_svg_dialog(&mut self) {
-        if let Ok(Response::Okay(path)) = nfd::open_file_dialog(Some("svg"), None) {
-            self.selected_file = Some(PathBuf::from(path));
-            WindowImpl::push_user_event(self.open_svg_message_type, 0);
-        }
-    }
-
-    fn run_save_dialog(&self, extension: &str) -> Result<PathBuf, ()> {
-        match nfd::open_save_dialog(Some(extension), None) {
-            Ok(Response::Okay(file)) => Ok(PathBuf::from(file)),
-            _ => Err(()),
-        }
-    }
 }
 
 impl WindowImpl {
     fn new() -> WindowImpl {
         SDL_VIDEO.with(|sdl_video| {
-            SDL_EVENT.with(|sdl_event| {
+            SDL_EVENT.with(|_sdl_event| {
                 let (window, gl_context, event_pump);
 
                 let gl_attributes = sdl_video.gl_attr();
@@ -135,17 +116,11 @@ impl WindowImpl {
 
                 let resource_loader = FilesystemResourceLoader::locate();
 
-                let open_svg_message_type = unsafe {
-                    sdl_event.register_event().unwrap()
-                };
-
                 WindowImpl {
                     window,
                     event_pump,
                     gl_context,
                     resource_loader,
-                    open_svg_message_type,
-                    selected_file: None,
                 }
             })
         })

@@ -14,7 +14,6 @@ use pathfinder_geometry::basic::point::Point2DI32;
 use pathfinder_geometry::distortion::BarrelDistortionCoefficients;
 use pathfinder_gl::GLVersion;
 use pathfinder_gpu::resources::ResourceLoader;
-use std::path::PathBuf;
 
 pub trait Window {
     fn gl_version(&self) -> GLVersion;
@@ -22,8 +21,6 @@ pub trait Window {
     fn resource_loader(&self) -> &dyn ResourceLoader;
     fn create_user_event_id(&self) -> u32;
     fn push_user_event(message_type: u32, message_data: u32);
-    fn present_open_svg_dialog(&mut self);
-    fn run_save_dialog(&self, extension: &str) -> Result<PathBuf, ()>;
 
     #[inline]
     fn barrel_distortion_coefficients(&self) -> BarrelDistortionCoefficients {
@@ -35,12 +32,6 @@ pub enum Event {
     Quit,
     WindowResized(WindowSize),
     User { message_type: u32, message_data: u32 },
-}
-
-#[derive(Clone, Copy)]
-pub enum Keycode {
-    Alphanumeric(u8),
-    Escape,
 }
 
 #[derive(Clone, Copy, Debug)]

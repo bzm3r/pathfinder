@@ -11,7 +11,7 @@
 //! A demo app for Pathfinder.
 
 use crate::device::{GroundLineVertexArray, GroundProgram, GroundSolidVertexArray};
-use crate::ui::{DemoUI, UIAction};
+use crate::ui::DemoUI;
 use crate::window::{Event, Window, WindowSize};
 use clap::{App, Arg};
 use image::ColorType;
@@ -45,9 +45,6 @@ use std::time::{Duration, Instant};
 use usvg::{Options as UsvgOptions, Tree};
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
-
-// How much the scene is scaled when a zoom button is clicked.
-const CAMERA_ZOOM_AMOUNT_2D: f32 = 0.1;
 
 const NEAR_CLIP_PLANE: f32 = 0.01;
 const FAR_CLIP_PLANE:  f32 = 10.0;
@@ -86,7 +83,7 @@ pub struct DemoApp<W> where W: Window {
 
     current_frame: Option<Frame>,
 
-    ui: DemoUI<GLDevice>,
+    ui: DemoUI,
     scene_thread_proxy: SceneThreadProxy,
     renderer: Renderer<GLDevice>,
 
@@ -131,7 +128,7 @@ impl<W> DemoApp<W> where W: Window {
         let ground_line_vertex_array = GroundLineVertexArray::new(&renderer.device,
                                                                   &ground_program);
 
-        let mut ui = DemoUI::new(&renderer.device, resources, options);
+        let mut ui = DemoUI::new(options);
         let mut message_epoch = 0;
         emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
 
@@ -299,14 +296,10 @@ impl<W> DemoApp<W> where W: Window {
             Point2DI32::new(0, 0).to_f32().scale(self.window_size.backing_scale_factor);
         self.ui.show_text_effects = self.scene_is_monochrome;
 
-        let mut ui_action = UIAction::None;
         self.ui.update(&self.renderer.device,
-                       &mut self.window,
-                       &mut self.renderer.debug_ui,
-                       &mut ui_action);
+                       &mut self.renderer.debug_ui);
 
         frame.ui_events = self.renderer.debug_ui.ui.event_queue.drain();
-        self.handle_ui_action(&mut ui_action);
 
         // Switch camera mode (2D/3D) if requested.
         //
@@ -430,47 +423,6 @@ impl<W> DemoApp<W> where W: Window {
         }
 
         self.renderer.render_scene(&built_scene);
-    }
-
-    fn handle_ui_action(&mut self, ui_action: &mut UIAction) {
-        match ui_action {
-            UIAction::None => {}
-
-            UIAction::TakeScreenshot(ref path) => {
-                self.pending_screenshot_path = Some((*path).clone());
-                self.dirty = true;
-            }
-
-            UIAction::ZoomIn => {
-                if let Camera::TwoD(ref mut transform) = self.camera {
-                    let scale = Point2DF32::splat(1.0 + CAMERA_ZOOM_AMOUNT_2D);
-                    let center = center_of_window(&self.window_size);
-                    *transform = transform.post_translate(-center)
-                                          .post_scale(scale)
-                                          .post_translate(center);
-                    self.dirty = true;
-                }
-            }
-            UIAction::ZoomOut => {
-                if let Camera::TwoD(ref mut transform) = self.camera {
-                    let scale = Point2DF32::splat(1.0 - CAMERA_ZOOM_AMOUNT_2D);
-                    let center = center_of_window(&self.window_size);
-                    *transform = transform.post_translate(-center)
-                                          .post_scale(scale)
-                                          .post_translate(center);
-                    self.dirty = true;
-                }
-            }
-            UIAction::Rotate(theta) => {
-                if let Camera::TwoD(ref mut transform) = self.camera {
-                    let old_rotation = transform.rotation();
-                    let center = center_of_window(&self.window_size);
-                    *transform = transform.post_translate(-center)
-                                          .post_rotate(*theta - old_rotation)
-                                          .post_translate(center);
-                }
-            }
-        }
     }
 
     fn take_screenshot(&mut self) {
@@ -689,10 +641,6 @@ fn build_scene(scene: &Scene,
     built_scene
 }
 
-fn center_of_window(window_size: &WindowSize) -> Point2DF32 {
-    window_size.device_size().to_f32().scale(0.5)
-}
-
 enum Camera {
     TwoD(Transform2DF32),
     ThreeD { transform: CameraTransform3D, velocity: Point3DF32 },
@@ -774,7 +722,7 @@ fn get_svg_building_message(built_svg: &BuiltSVG) -> String {
     format!("Warning: These features in the SVG are unsupported: {}.", built_svg.result_flags)
 }
 
-fn emit_message<W>(ui: &mut DemoUI<GLDevice>,
+fn emit_message<W>(ui: &mut DemoUI,
                    message_epoch: &mut u32,
                    expire_message_event_id: u32,
                    message: String)
