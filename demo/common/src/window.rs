@@ -18,7 +18,6 @@ use std::path::PathBuf;
 
 pub trait Window {
     fn gl_version(&self) -> GLVersion;
-    fn mouse_position(&self) -> Point2DI32;
     fn present(&self);
     fn resource_loader(&self) -> &dyn ResourceLoader;
     fn create_user_event_id(&self) -> u32;
@@ -37,10 +36,6 @@ pub enum Event {
     WindowResized(WindowSize),
     KeyDown(Keycode),
     KeyUp(Keycode),
-    MouseDown(Point2DI32),
-    MouseMoved(Point2DI32),
-    MouseDragged(Point2DI32),
-    Zoom(f32),
     Look { pitch: f32, yaw: f32 },
     OpenSVG(SVGPath),
     User { message_type: u32, message_data: u32 },

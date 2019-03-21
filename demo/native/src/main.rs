@@ -67,10 +67,6 @@ impl Window for WindowImpl {
         GLVersion::GL3
     }
 
-    fn mouse_position(&self) -> Point2DI32 {
-        Point2DI32::new(0, 0)
-    }
-
     fn present(&self) {
         self.window.gl_swap_window();
     }
@@ -191,17 +187,6 @@ impl WindowImpl {
             SDLEvent::User { type_, code, .. } => {
                 Some(Event::User { message_type: type_, message_data: code as u32 })
             }
-            SDLEvent::MouseButtonDown { x, y, .. } => {
-                Some(Event::MouseDown(Point2DI32::new(x, y)))
-            }
-            SDLEvent::MouseMotion { x, y, mousestate, .. } => {
-                let position = Point2DI32::new(x, y);
-                if mousestate.left() {
-                    Some(Event::MouseDragged(position))
-                } else {
-                    Some(Event::MouseMoved(position))
-                }
-            }
             SDLEvent::Quit { .. } => Some(Event::Quit),
             SDLEvent::Window { win_event: WindowEvent::SizeChanged(..), .. } => {
                 Some(Event::WindowResized(self.size()))
@@ -212,7 +197,6 @@ impl WindowImpl {
             SDLEvent::KeyUp { keycode: Some(sdl_keycode), .. } => {
                 self.convert_sdl_keycode(sdl_keycode).map(Event::KeyUp)
             }
-            SDLEvent::MultiGesture { d_dist, .. } => Some(Event::Zoom(d_dist)),
             _ => None,
         }
     }

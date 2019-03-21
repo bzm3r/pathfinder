@@ -248,21 +248,6 @@ impl<W> DemoApp<W> where W: Window {
                     self.renderer.set_main_framebuffer_size(self.window_size.device_size());
                     self.dirty = true;
                 }
-                Event::Zoom(d_dist) => {
-                    if let Camera::TwoD(ref mut transform) = self.camera {
-                        let position = get_mouse_position(self.window_size.backing_scale_factor);
-                        *transform = transform.post_translate(-position);
-                        let scale_delta = 1.0 + d_dist * CAMERA_SCALE_SPEED_2D;
-                        *transform = transform.post_scale(Point2DF32::splat(scale_delta));
-                        *transform = transform.post_translate(position);
-                    }
-                }
-                Event::Look { pitch, yaw } => {
-                    if let Camera::ThreeD { ref mut transform, .. } = self.camera {
-                        transform.pitch += pitch;
-                        transform.yaw += yaw;
-                    }
-                }
                 Event::KeyDown(Keycode::Alphanumeric(b'w')) => {
                     if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
                         let scale_factor = scale_factor_for_view_box(self.scene_view_box);
@@ -377,7 +362,7 @@ impl<W> DemoApp<W> where W: Window {
         }
 
         self.renderer.debug_ui.ui.mouse_position =
-            get_mouse_position(self.window_size.backing_scale_factor);
+            Point2DI32::new(0, 0).to_f32().scale(self.window_size.backing_scale_factor);
         self.ui.show_text_effects = self.scene_is_monochrome;
 
         let mut ui_action = UIAction::None;
@@ -817,10 +802,6 @@ impl Camera {
             velocity: Point3DF32::default(),
         }
     }
-
-    fn is_3d(&self) -> bool {
-        match *self { Camera::ThreeD { .. } => true, Camera::TwoD { .. } => false }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -874,10 +855,6 @@ impl CameraTransform3D {
 
 fn scale_factor_for_view_box(view_box: RectF32) -> f32 {
     1.0 / f32::min(view_box.size().x(), view_box.size().y())
-}
-
-fn get_mouse_position(scale_factor: f32) -> Point2DF32 {
-    Point2DI32::new(0, 0).to_f32().scale(scale_factor)
 }
 
 fn get_svg_building_message(built_svg: &BuiltSVG) -> String {
