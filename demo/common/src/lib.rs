@@ -41,7 +41,6 @@ use usvg::{Options as UsvgOptions, Tree};
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
 const LIGHT_BG_COLOR:     ColorU = ColorU { r: 248, g: 248, b: 248, a: 255 };
-const DARK_BG_COLOR:      ColorU = ColorU { r: 32,  g: 32,  b: 32,  a: 255 };
 const GROUND_SOLID_COLOR: ColorU = ColorU { r: 80,  g: 80,  b: 80,  a: 255 };
 const GROUND_LINE_COLOR:  ColorU = ColorU { r: 127, g: 127, b: 127, a: 255 };
 
@@ -391,7 +390,7 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     fn background_color(&self) -> ColorU {
-        if self.ui.dark_background_enabled { DARK_BG_COLOR } else { LIGHT_BG_COLOR }
+        LIGHT_BG_COLOR
     }
 
 }
