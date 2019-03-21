@@ -10,19 +10,16 @@
 
 //! A demo app for Pathfinder.
 
-use crate::device::{GroundLineVertexArray, GroundProgram, GroundSolidVertexArray};
 use crate::ui::DemoUI;
 use crate::window::{Event, Window, WindowSize};
 use image::ColorType;
 use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::{RectF32, RectI32};
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
-use pathfinder_geometry::basic::transform3d::{Transform3DF32};
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gl::GLDevice;
 use pathfinder_gpu::resources::ResourceLoader;
-use pathfinder_gpu::{DepthFunc, DepthState, Device, Primitive, RenderState, StencilFunc};
-use pathfinder_gpu::{StencilState, UniformData};
+use pathfinder_gpu::Device;
 use pathfinder_renderer::builder::{RenderOptions, RenderTransform, SceneBuilder};
 use pathfinder_renderer::gpu::renderer::Renderer;
 use pathfinder_renderer::gpu_data::{BuiltScene, Stats};
@@ -41,14 +38,10 @@ use usvg::{Options as UsvgOptions, Tree};
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
 const LIGHT_BG_COLOR:     ColorU = ColorU { r: 248, g: 248, b: 248, a: 255 };
-const GROUND_SOLID_COLOR: ColorU = ColorU { r: 80,  g: 80,  b: 80,  a: 255 };
-const GROUND_LINE_COLOR:  ColorU = ColorU { r: 127, g: 127, b: 127, a: 255 };
 
 const APPROX_FONT_SIZE: f32 = 16.0;
 
 const MESSAGE_TIMEOUT_SECS: u64 = 5;
-
-pub const GRIDLINE_COUNT: u8 = 10;
 
 pub mod window;
 
@@ -60,8 +53,6 @@ pub struct DemoApp<W> where W: Window {
     pub should_exit: bool,
 
     window_size: WindowSize,
-
-    scene_view_box: RectF32,
     scene_is_monochrome: bool,
 
     camera: Camera,
@@ -76,10 +67,6 @@ pub struct DemoApp<W> where W: Window {
     ui: DemoUI,
     scene_thread_proxy: SceneThreadProxy,
     renderer: Renderer<GLDevice>,
-
-    ground_program: GroundProgram<GLDevice>,
-    ground_solid_vertex_array: GroundSolidVertexArray<GLDevice>,
-    ground_line_vertex_array: GroundLineVertexArray<GLDevice>,
 }
 
 impl<W> DemoApp<W> where W: Window {
@@ -105,14 +92,6 @@ impl<W> DemoApp<W> where W: Window {
 
         let camera = Camera::new_2d(scene_view_box, view_box_size);
 
-        let ground_program = GroundProgram::new(&renderer.device, resources);
-        let ground_solid_vertex_array =
-            GroundSolidVertexArray::new(&renderer.device,
-                                        &ground_program,
-                                        &renderer.quad_vertex_positions_buffer());
-        let ground_line_vertex_array = GroundLineVertexArray::new(&renderer.device,
-                                                                  &ground_program);
-
         let mut ui = DemoUI::new();
         let mut message_epoch = 0;
         emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
@@ -123,7 +102,6 @@ impl<W> DemoApp<W> where W: Window {
 
             window_size,
 
-            scene_view_box,
             scene_is_monochrome,
 
             camera,
@@ -138,10 +116,6 @@ impl<W> DemoApp<W> where W: Window {
             ui,
             scene_thread_proxy,
             renderer,
-
-            ground_program,
-            ground_solid_vertex_array,
-            ground_line_vertex_array,
         }
     }
 
@@ -223,7 +197,6 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     pub fn draw_scene(&mut self, render_scene_index: u32) {
-        self.draw_environment(render_scene_index);
         self.render_vector_scene(render_scene_index);
 
         let frame = self.current_frame.as_mut().unwrap();
@@ -280,76 +253,6 @@ impl<W> DemoApp<W> where W: Window {
 
         self.window.present();
         self.frame_counter += 1;
-    }
-
-    fn draw_environment(&self, viewport_index: u32) {
-        let render_msg = &self.current_frame.as_ref().unwrap().render_msg;
-        let render_transform = &render_msg.render_scenes[viewport_index as usize].transform;
-
-        let perspective = match *render_transform {
-            RenderTransform::Transform2D(..) => return,
-            RenderTransform::Perspective(perspective) => perspective,
-        };
-
-        let ground_scale = self.scene_view_box.max_x() * 2.0;
-
-        let mut base_transform = perspective.transform;
-        base_transform = base_transform.post_mul(&Transform3DF32::from_translation(
-            -0.5 * self.scene_view_box.max_x(),
-            self.scene_view_box.max_y(),
-            -0.5 * ground_scale));
-
-        // Draw gridlines. Use the stencil buffer to avoid Z-fighting.
-        let mut transform = base_transform;
-        let gridline_scale = ground_scale / GRIDLINE_COUNT as f32;
-        transform =
-            transform.post_mul(&Transform3DF32::from_scale(gridline_scale, 1.0, gridline_scale));
-        let device = &self.renderer.device;
-        device.bind_vertex_array(&self.ground_line_vertex_array.vertex_array);
-        device.use_program(&self.ground_program.program);
-        device.set_uniform(&self.ground_program.transform_uniform, UniformData::Mat4([
-            transform.c0,
-            transform.c1,
-            transform.c2,
-            transform.c3,
-        ]));
-        device.set_uniform(&self.ground_program.color_uniform,
-                           UniformData::Vec4(GROUND_LINE_COLOR.to_f32().0));
-        device.draw_arrays(Primitive::Lines, (GRIDLINE_COUNT as u32 + 1) * 4, &RenderState {
-            depth: Some(DepthState { func: DepthFunc::Always, write: true }),
-            stencil: Some(StencilState {
-                func: StencilFunc::Always,
-                reference: 2,
-                mask: 2,
-                write: true,
-            }),
-            ..RenderState::default()
-        });
-
-        // Fill ground.
-        let mut transform = base_transform;
-        transform =
-            transform.post_mul(&Transform3DF32::from_scale(ground_scale, 1.0, ground_scale));
-        device.bind_vertex_array(&self.ground_solid_vertex_array.vertex_array);
-        device.use_program(&self.ground_program.program);
-        device.set_uniform(&self.ground_program.transform_uniform, UniformData::Mat4([
-            transform.c0,
-            transform.c1,
-            transform.c2,
-            transform.c3,
-        ]));
-        device.set_uniform(&self.ground_program.color_uniform,
-                           UniformData::Vec4(GROUND_SOLID_COLOR.to_f32().0));
-        device.draw_arrays(Primitive::TriangleFan, 4, &RenderState {
-            depth: Some(DepthState { func: DepthFunc::Less, write: true }),
-            stencil: Some(StencilState {
-                func: StencilFunc::NotEqual,
-                reference: 2,
-                mask: 2,
-                write: false,
-            }),
-            ..RenderState::default()
-        });
     }
 
     fn render_vector_scene(&mut self, viewport_index: u32) {
@@ -440,7 +343,7 @@ impl SceneThread {
                         let built_scene = build_scene(&self.scene,
                                                       &build_options,
                                                       (*render_transform).clone());
-                        RenderScene { built_scene, transform: (*render_transform).clone() }
+                        RenderScene { built_scene }
                     }).collect();
                     let tile_time = Instant::now() - start_time;
                     self.sender.send(SceneToMainMsg { render_scenes, tile_time }).unwrap();
@@ -467,7 +370,6 @@ struct SceneToMainMsg {
 
 pub struct RenderScene {
     built_scene: BuiltScene,
-    transform: RenderTransform,
 }
 
 #[derive(Clone, Copy)]
