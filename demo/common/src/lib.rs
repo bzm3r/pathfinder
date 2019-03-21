@@ -12,7 +12,6 @@
 
 use crate::ui::DemoUI;
 use crate::window::{Event, Window, WindowSize};
-use image::ColorType;
 use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::{RectF32, RectI32};
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
@@ -29,7 +28,6 @@ use pathfinder_renderer::z_buffer::ZBuffer;
 use pathfinder_svg::BuiltSVG;
 use pathfinder_ui::UIEvent;
 use std::iter;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -57,7 +55,6 @@ pub struct DemoApp<W> where W: Window {
 
     camera: Camera,
     frame_counter: u32,
-    pending_screenshot_path: Option<PathBuf>,
     dirty: bool,
     expire_message_event_id: u32,
     message_epoch: u32,
@@ -106,7 +103,6 @@ impl<W> DemoApp<W> where W: Window {
 
             camera,
             frame_counter: 0,
-            pending_screenshot_path: None,
             dirty: true,
             expire_message_event_id,
             message_epoch,
@@ -220,10 +216,6 @@ impl<W> DemoApp<W> where W: Window {
         let drawable_size = self.window_size.device_size();
         self.renderer.set_viewport(RectI32::new(Point2DI32::default(), drawable_size));
 
-        if self.pending_screenshot_path.is_some() {
-            self.take_screenshot();
-        }
-
         if let Some(render_stats) = frame.render_stats.take() {
             self.renderer.debug_ui.add_sample(render_stats.stats,
                                               frame.render_msg.tile_time,
@@ -279,17 +271,6 @@ impl<W> DemoApp<W> where W: Window {
         self.renderer.disable_depth();
 
         self.renderer.render_scene(&built_scene);
-    }
-
-    fn take_screenshot(&mut self) {
-        let screenshot_path = self.pending_screenshot_path.take().unwrap();
-        let drawable_size = self.window_size.device_size();
-        let pixels = self.renderer.device.read_pixels_from_default_framebuffer(drawable_size);
-        image::save_buffer(screenshot_path,
-                           &pixels,
-                           drawable_size.x() as u32,
-                           drawable_size.y() as u32,
-                           ColorType::RGBA(8)).unwrap();
     }
 
     fn background_color(&self) -> ColorU {
@@ -379,7 +360,7 @@ struct RenderStats {
 }
 
 fn load_scene(resource_loader: &dyn ResourceLoader) -> BuiltSVG {
-    let data = resource_loader.slurp(DEFAULT_SVG_VIRTUAL_PATH).unwrap();
+    let data: Vec<u8> = resource_loader.slurp(DEFAULT_SVG_VIRTUAL_PATH).unwrap();
 
     BuiltSVG::from_tree(Tree::from_data(&data, &UsvgOptions::default()).unwrap())
 }
