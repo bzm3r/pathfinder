@@ -12,7 +12,7 @@
 
 use crate::device::{GroundLineVertexArray, GroundProgram, GroundSolidVertexArray};
 use crate::ui::{DemoUI, UIAction};
-use crate::window::{Event, Keycode, SVGPath, Window, WindowSize};
+use crate::window::{Event, Window, WindowSize};
 use clap::{App, Arg};
 use image::ColorType;
 use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32, Point3DF32};
@@ -35,8 +35,6 @@ use pathfinder_svg::BuiltSVG;
 use pathfinder_ui::UIEvent;
 use rayon::ThreadPoolBuilder;
 use std::f32::consts::FRAC_PI_4;
-use std::fs::File;
-use std::io::Read;
 use std::iter;
 use std::panic;
 use std::path::PathBuf;
@@ -48,10 +46,6 @@ use usvg::{Options as UsvgOptions, Tree};
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
-const CAMERA_VELOCITY: f32 = 0.02;
-
-// How much the scene is scaled when a scale gesture is performed.
-const CAMERA_SCALE_SPEED_2D: f32 = 6.0;
 // How much the scene is scaled when a zoom button is clicked.
 const CAMERA_ZOOM_AMOUNT_2D: f32 = 0.1;
 
@@ -111,7 +105,7 @@ impl<W> DemoApp<W> where W: Window {
 
         let view_box_size = view_box_size(options.mode, &window_size);
 
-        let built_svg = load_scene(resources, &options.input_path);
+        let built_svg = load_scene(resources);
         let message = get_svg_building_message(&built_svg);
         let scene_view_box = built_svg.scene.view_box;
         let scene_is_monochrome = built_svg.scene.is_monochrome();
@@ -236,8 +230,7 @@ impl<W> DemoApp<W> where W: Window {
 
         for event in events {
             match event {
-                Event::Quit { .. } |
-                Event::KeyDown(Keycode::Escape) => {
+                Event::Quit { .. } => {
                     self.should_exit = true;
                     self.dirty = true;
                 }
@@ -246,65 +239,6 @@ impl<W> DemoApp<W> where W: Window {
                     let view_box_size = view_box_size(self.ui.mode, &self.window_size);
                     self.scene_thread_proxy.set_drawable_size(view_box_size);
                     self.renderer.set_main_framebuffer_size(self.window_size.device_size());
-                    self.dirty = true;
-                }
-                Event::KeyDown(Keycode::Alphanumeric(b'w')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        let scale_factor = scale_factor_for_view_box(self.scene_view_box);
-                        velocity.set_z(-CAMERA_VELOCITY / scale_factor);
-                        self.dirty = true;
-                    }
-                }
-                Event::KeyDown(Keycode::Alphanumeric(b's')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        let scale_factor = scale_factor_for_view_box(self.scene_view_box);
-                        velocity.set_z(CAMERA_VELOCITY / scale_factor);
-                        self.dirty = true;
-                    }
-                }
-                Event::KeyDown(Keycode::Alphanumeric(b'a')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        let scale_factor = scale_factor_for_view_box(self.scene_view_box);
-                        velocity.set_x(-CAMERA_VELOCITY / scale_factor);
-                        self.dirty = true;
-                    }
-                }
-                Event::KeyDown(Keycode::Alphanumeric(b'd')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        let scale_factor = scale_factor_for_view_box(self.scene_view_box);
-                        velocity.set_x(CAMERA_VELOCITY / scale_factor);
-                        self.dirty = true;
-                    }
-                }
-                Event::KeyUp(Keycode::Alphanumeric(b'w')) |
-                Event::KeyUp(Keycode::Alphanumeric(b's')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        velocity.set_z(0.0);
-                        self.dirty = true;
-                    }
-                }
-                Event::KeyUp(Keycode::Alphanumeric(b'a')) |
-                Event::KeyUp(Keycode::Alphanumeric(b'd')) => {
-                    if let Camera::ThreeD { ref mut velocity, .. } = self.camera {
-                        velocity.set_x(0.0);
-                        self.dirty = true;
-                    }
-                }
-                Event::OpenSVG(ref svg_path) => {
-                    let built_svg = load_scene(self.window.resource_loader(), svg_path);
-                    self.ui.message = get_svg_building_message(&built_svg);
-
-                    let view_box_size = view_box_size(self.ui.mode, &self.window_size);
-                    self.scene_view_box = built_svg.scene.view_box;
-                    self.scene_is_monochrome = built_svg.scene.is_monochrome();
-
-                    self.camera = if self.ui.mode == Mode::TwoD {
-                        Camera::new_2d(self.scene_view_box, view_box_size)
-                    } else {
-                        Camera::new_3d(self.scene_view_box)
-                    };
-
-                    self.scene_thread_proxy.load_scene(built_svg.scene, view_box_size);
                     self.dirty = true;
                 }
                 Event::User { message_type: event_id, message_data: expected_epoch } if
@@ -569,10 +503,6 @@ impl SceneThreadProxy {
         SceneThreadProxy { sender: main_to_scene_sender, receiver: scene_to_main_receiver }
     }
 
-    fn load_scene(&self, scene: Scene, view_box_size: Point2DI32) {
-        self.sender.send(MainToSceneMsg::LoadScene { scene, view_box_size }).unwrap();
-    }
-
     fn set_drawable_size(&self, drawable_size: Point2DI32) {
         self.sender.send(MainToSceneMsg::SetDrawableSize(drawable_size)).unwrap();
     }
@@ -596,11 +526,6 @@ impl SceneThread {
     fn run(mut self) {
         while let Ok(msg) = self.receiver.recv() {
             match msg {
-                MainToSceneMsg::LoadScene { scene, view_box_size } => {
-                    self.scene = scene;
-                    self.scene.view_box = RectF32::new(Point2DF32::default(),
-                                                       view_box_size.to_f32());
-                }
                 MainToSceneMsg::SetDrawableSize(size) => {
                     self.scene.view_box = RectF32::new(Point2DF32::default(), size.to_f32());
                 }
@@ -624,7 +549,6 @@ impl SceneThread {
 }
 
 enum MainToSceneMsg {
-    LoadScene { scene: Scene, view_box_size: Point2DI32 },
     SetDrawableSize(Point2DI32),
     Build(BuildOptions),
 }
@@ -649,7 +573,6 @@ pub struct RenderScene {
 pub struct Options {
     jobs: Option<usize>,
     mode: Mode,
-    input_path: SVGPath,
 }
 
 impl Options {
@@ -680,11 +603,6 @@ impl Options {
             Mode::TwoD
         };
 
-        let input_path = match matches.value_of("INPUT") {
-            None => SVGPath::Default,
-            Some(path) => SVGPath::Path(PathBuf::from(path)),
-        };
-
         // Set up Rayon.
         let mut thread_pool_builder = ThreadPoolBuilder::new();
         if let Some(jobs) = jobs {
@@ -692,7 +610,7 @@ impl Options {
         }
         thread_pool_builder.build_global().unwrap();
 
-        Options { jobs, mode, input_path }
+        Options { jobs, mode }
     }
 }
 
@@ -715,16 +633,8 @@ struct RenderStats {
     stats: Stats,
 }
 
-fn load_scene(resource_loader: &dyn ResourceLoader, input_path: &SVGPath) -> BuiltSVG {
-    let mut data;
-    match *input_path {
-        SVGPath::Default => data = resource_loader.slurp(DEFAULT_SVG_VIRTUAL_PATH).unwrap(),
-        SVGPath::Resource(ref name) => data = resource_loader.slurp(name).unwrap(),
-        SVGPath::Path(ref path) => {
-            data = vec![];
-            File::open(path).unwrap().read_to_end(&mut data).unwrap();
-        }
-    };
+fn load_scene(resource_loader: &dyn ResourceLoader) -> BuiltSVG {
+    let data = resource_loader.slurp(DEFAULT_SVG_VIRTUAL_PATH).unwrap();
 
     BuiltSVG::from_tree(Tree::from_data(&data, &UsvgOptions::default()).unwrap())
 }

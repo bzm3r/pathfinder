@@ -12,13 +12,12 @@
 
 use nfd::Response;
 use pathfinder_demo::DemoApp;
-use pathfinder_demo::window::{Event, Keycode, SVGPath, Window, WindowSize};
+use pathfinder_demo::window::{Event, Window, WindowSize};
 use pathfinder_geometry::basic::point::Point2DI32;
 use pathfinder_gl::GLVersion;
 use pathfinder_gpu::resources::{FilesystemResourceLoader, ResourceLoader};
 use sdl2::{EventPump, EventSubsystem, Sdl, VideoSubsystem};
 use sdl2::event::{Event as SDLEvent, WindowEvent};
-use sdl2::keyboard::Keycode as SDLKeycode;
 use sdl2::video::{GLContext, GLProfile, Window as SDLWindow};
 use sdl2_sys::{SDL_Event, SDL_UserEvent};
 use std::path::PathBuf;
@@ -181,33 +180,9 @@ impl WindowImpl {
 
     fn convert_sdl_event(&self, sdl_event: SDLEvent) -> Option<Event> {
         match sdl_event {
-            SDLEvent::User { type_, .. } if type_ == self.open_svg_message_type => {
-                Some(Event::OpenSVG(SVGPath::Path(self.selected_file.clone().unwrap())))
-            }
-            SDLEvent::User { type_, code, .. } => {
-                Some(Event::User { message_type: type_, message_data: code as u32 })
-            }
             SDLEvent::Quit { .. } => Some(Event::Quit),
             SDLEvent::Window { win_event: WindowEvent::SizeChanged(..), .. } => {
                 Some(Event::WindowResized(self.size()))
-            }
-            SDLEvent::KeyDown { keycode: Some(sdl_keycode), .. } => {
-                self.convert_sdl_keycode(sdl_keycode).map(Event::KeyDown)
-            }
-            SDLEvent::KeyUp { keycode: Some(sdl_keycode), .. } => {
-                self.convert_sdl_keycode(sdl_keycode).map(Event::KeyUp)
-            }
-            _ => None,
-        }
-    }
-
-    fn convert_sdl_keycode(&self, sdl_keycode: SDLKeycode) -> Option<Keycode> {
-        match sdl_keycode {
-            SDLKeycode::Escape => Some(Keycode::Escape),
-            sdl_keycode if sdl_keycode as i32 >= SDLKeycode::A as i32 &&
-                    sdl_keycode as i32 <= SDLKeycode::Z as i32 => {
-                let offset = (sdl_keycode as i32 - SDLKeycode::A as i32) as u8;
-                Some(Keycode::Alphanumeric(offset + b'a'))
             }
             _ => None,
         }
