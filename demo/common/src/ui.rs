@@ -37,16 +37,19 @@ impl DemoUI {
         }
     }
 
-    pub fn update<D>(&mut self,
-                     device: &D,
-                     debug_ui: &mut DebugUI<D>)
-                     where D: Device {
+    pub fn update<D>(&mut self, device: &D, debug_ui: &mut DebugUI<D>)
+    where
+        D: Device,
+    {
         // Draw message text.
 
         self.draw_message_text(device, debug_ui);
     }
 
-    fn draw_message_text<D>(&mut self, device: &D, debug_ui: &mut DebugUI<D>) where D:Device {
+    fn draw_message_text<D>(&mut self, device: &D, debug_ui: &mut DebugUI<D>)
+    where
+        D: Device,
+    {
         if self.message.is_empty() {
             return;
         }
@@ -54,12 +57,16 @@ impl DemoUI {
         let message_size = debug_ui.ui.measure_text(&self.message);
         let window_origin = Point2DI32::new(PADDING, PADDING);
         let window_size = Point2DI32::new(PADDING * 2 + message_size, TOOLTIP_HEIGHT);
-        debug_ui.ui.draw_solid_rounded_rect(device,
-                                            RectI32::new(window_origin, window_size),
-                                            WINDOW_COLOR);
-        debug_ui.ui.draw_text(device,
-                              &self.message,
-                              window_origin + Point2DI32::new(PADDING, PADDING + FONT_ASCENT),
-                              false);
+        debug_ui.ui.draw_solid_rounded_rect(
+            device,
+            RectI32::new(window_origin, window_size),
+            WINDOW_COLOR,
+        );
+        debug_ui.ui.draw_text(
+            device,
+            &self.message,
+            window_origin + Point2DI32::new(PADDING, PADDING + FONT_ASCENT),
+            false,
+        );
     }
 }

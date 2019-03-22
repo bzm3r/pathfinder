@@ -31,7 +31,10 @@ pub trait Window {
 pub enum Event {
     Quit,
     WindowResized(WindowSize),
-    User { message_type: u32, message_data: u32 },
+    User {
+        message_type: u32,
+        message_data: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,6 +46,9 @@ pub struct WindowSize {
 impl WindowSize {
     #[inline]
     pub fn device_size(&self) -> Point2DI32 {
-        self.logical_size.to_f32().scale(self.backing_scale_factor).to_i32()
+        self.logical_size
+            .to_f32()
+            .scale(self.backing_scale_factor)
+            .to_i32()
     }
 }

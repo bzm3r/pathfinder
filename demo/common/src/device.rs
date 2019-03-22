@@ -9,4 +9,3 @@
 // except according to those terms.
 
 //! GPU rendering code specifically for the demo.
-
