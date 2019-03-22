@@ -997,6 +997,6 @@ fn create_stroke(scene: &mut Scene, color: ColorU, stroke_width: f32) {
         outline,
         style,
         String::from("test"),
-        PathObjectKind::Stroke,
+        PathObjectKind::Fill,
     ));
 }
