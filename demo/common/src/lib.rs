@@ -15,13 +15,17 @@ use crate::ui::{DemoUI, UIAction};
 use crate::window::{Event, Keycode, SVGPath, Window, WindowSize};
 use clap::{App, Arg};
 use image::ColorType;
-use jemallocator;
+//use jemallocator;
+use pathfinder_geometry::basic::line_segment::LineSegmentF32;
 use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32, Point3DF32};
 use pathfinder_geometry::basic::rect::{RectF32, RectI32};
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
 use pathfinder_geometry::basic::transform3d::{Perspective, Transform3DF32};
 use pathfinder_geometry::color::ColorU;
 use pathfinder_geometry::distortion::BarrelDistortionCoefficients;
+use pathfinder_geometry::segment::{Segment, SegmentFlags};
+use pathfinder_geometry::outline::Outline;
+use pathfinder_geometry::stroke::OutlineStrokeToFill;
 use pathfinder_gl::GLDevice;
 use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_gpu::{DepthFunc, DepthState, Device, Primitive, RenderState, StencilFunc};
@@ -30,7 +34,7 @@ use pathfinder_renderer::builder::{RenderOptions, RenderTransform, SceneBuilder}
 use pathfinder_renderer::gpu::renderer::Renderer;
 use pathfinder_renderer::gpu_data::{BuiltScene, Stats};
 use pathfinder_renderer::post::{DEFRINGING_KERNEL_CORE_GRAPHICS, STEM_DARKENING_FACTORS};
-use pathfinder_renderer::scene::Scene;
+use pathfinder_renderer::scene::{Scene, Paint, PathObject, PathObjectKind};
 use pathfinder_renderer::z_buffer::ZBuffer;
 use pathfinder_svg::BuiltSVG;
 use pathfinder_ui::{MousePosition, UIEvent};
@@ -47,8 +51,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use usvg::{Options as UsvgOptions, Tree};
 
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+//#[global_allocator]
+//static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
@@ -118,16 +122,18 @@ impl<W> DemoApp<W> where W: Window {
 
         let view_box_size = view_box_size(options.mode, &window_size);
 
-        let built_svg = load_scene(resources, &options.input_path);
-        let message = get_svg_building_message(&built_svg);
-        let scene_view_box = built_svg.scene.view_box;
-        let scene_is_monochrome = built_svg.scene.is_monochrome();
+        //let built_svg = load_scene(resources, &options.input_path);
+        //let message = get_svg_building_message(&built_svg);
+        let mut scene = Scene::new();
+        create_stroke(&mut scene, ColorU::black(), 10.0);
+        let scene_view_box = scene.view_box;
+        let scene_is_monochrome = scene.is_monochrome();
 
         let renderer = Renderer::new(device,
                                      resources,
                                      RectI32::new(Point2DI32::default(), view_box_size),
                                      window_size.device_size());
-        let scene_thread_proxy = SceneThreadProxy::new(built_svg.scene, options.clone());
+        let scene_thread_proxy = SceneThreadProxy::new(scene, options.clone());
         scene_thread_proxy.set_drawable_size(view_box_size);
 
         let camera = if options.mode == Mode::TwoD {
@@ -146,7 +152,7 @@ impl<W> DemoApp<W> where W: Window {
 
         let mut ui = DemoUI::new(&renderer.device, resources, options);
         let mut message_epoch = 0;
-        emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
+//        emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
 
         DemoApp {
             window,
@@ -336,21 +342,21 @@ impl<W> DemoApp<W> where W: Window {
                     }
                 }
                 Event::OpenSVG(ref svg_path) => {
-                    let built_svg = load_scene(self.window.resource_loader(), svg_path);
-                    self.ui.message = get_svg_building_message(&built_svg);
-
-                    let view_box_size = view_box_size(self.ui.mode, &self.window_size);
-                    self.scene_view_box = built_svg.scene.view_box;
-                    self.scene_is_monochrome = built_svg.scene.is_monochrome();
-
-                    self.camera = if self.ui.mode == Mode::TwoD {
-                        Camera::new_2d(self.scene_view_box, view_box_size)
-                    } else {
-                        Camera::new_3d(self.scene_view_box)
-                    };
-
-                    self.scene_thread_proxy.load_scene(built_svg.scene, view_box_size);
-                    self.dirty = true;
+//                    let built_svg = load_scene(self.window.resource_loader(), svg_path);
+//                    self.ui.message = get_svg_building_message(&built_svg);
+//
+//                    let view_box_size = view_box_size(self.ui.mode, &self.window_size);
+//                    self.scene_view_box = built_svg.scene.view_box;
+//                    self.scene_is_monochrome = built_svg.scene.is_monochrome();
+//
+//                    self.camera = if self.ui.mode == Mode::TwoD {
+//                        Camera::new_2d(self.scene_view_box, view_box_size)
+//                    } else {
+//                        Camera::new_3d(self.scene_view_box)
+//                    };
+//
+//                    self.scene_thread_proxy.load_scene(built_svg.scene, view_box_size);
+//                    self.dirty = true;
                 }
                 Event::User { message_type: event_id, message_data: expected_epoch } if
                         event_id == self.expire_message_event_id &&
@@ -969,4 +975,27 @@ impl Frame {
     fn new(render_msg: SceneToMainMsg, ui_events: Vec<UIEvent>) -> Frame {
         Frame { render_msg, ui_events, render_stats: None }
     }
+}
+
+fn create_stroke(scene: &mut Scene, color: ColorU, stroke_width: f32) {
+    let paint = Paint { color };
+    let style = scene.push_paint(&paint);
+    let mut segment = Segment::line(&LineSegmentF32::new(
+        &Point2DF32::new(0.0, 0.0),
+        &Point2DF32::new(100.0, 0.0),
+    ));
+    segment.flags.insert(SegmentFlags::CLOSES_SUBPATH);
+    let segments = vec![segment];
+    let outline = Outline::from_segments(segments.into_iter());
+    let mut stroke_to_fill = OutlineStrokeToFill::new(outline, stroke_width);
+    stroke_to_fill.offset();
+    let outline = stroke_to_fill.outline;
+
+    scene.bounds = scene.bounds.union_rect(outline.bounds());
+    scene.objects.push(PathObject::new(
+        outline,
+        style,
+        String::from("test"),
+        PathObjectKind::Stroke,
+    ));
 }
