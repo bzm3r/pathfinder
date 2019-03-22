@@ -984,6 +984,7 @@ fn create_stroke(scene: &mut Scene, color: ColorU, stroke_width: f32) {
         &Point2DF32::new(0.0, 0.0),
         &Point2DF32::new(100.0, 0.0),
     ));
+    segment.flags.insert(SegmentFlags::FIRST_IN_SUBPATH);
     segment.flags.insert(SegmentFlags::CLOSES_SUBPATH);
     let segments = vec![segment];
     let outline = Outline::from_segments(segments.into_iter());
