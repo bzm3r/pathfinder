@@ -12,34 +12,31 @@
 
 use crate::ui::DemoUI;
 use crate::window::{Event, Window, WindowSize};
+use pathfinder_geometry::stroke::OutlineStrokeToFill;
+use pathfinder_geometry::segment::{Segment, SegmentFlags};
+use pathfinder_geometry::outline::Outline;
 use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::{RectF32, RectI32};
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gl::GLDevice;
-use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_gpu::Device;
 use pathfinder_renderer::builder::{RenderOptions, RenderTransform, SceneBuilder};
 use pathfinder_renderer::gpu::renderer::Renderer;
 use pathfinder_renderer::gpu_data::{BuiltScene, Stats};
 use pathfinder_renderer::post::{DEFRINGING_KERNEL_CORE_GRAPHICS, STEM_DARKENING_FACTORS};
-use pathfinder_renderer::scene::Scene;
+use pathfinder_renderer::scene::{Scene, PathObject, PathObjectKind, Paint};
 use pathfinder_renderer::z_buffer::ZBuffer;
-use pathfinder_svg::BuiltSVG;
 use pathfinder_ui::UIEvent;
 use std::iter;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
-use usvg::{Options as UsvgOptions, Tree};
-
-static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
+use pathfinder_geometry::basic::line_segment::LineSegmentF32;
 
 const LIGHT_BG_COLOR:     ColorU = ColorU { r: 248, g: 248, b: 248, a: 255 };
 
 const APPROX_FONT_SIZE: f32 = 16.0;
-
-const MESSAGE_TIMEOUT_SECS: u64 = 5;
 
 pub mod window;
 
@@ -75,23 +72,22 @@ impl<W> DemoApp<W> where W: Window {
 
         let view_box_size = window_size.device_size();
 
-        let built_svg = load_scene(resources);
-        let message = get_svg_building_message(&built_svg);
-        let scene_view_box = built_svg.scene.view_box;
-        let scene_is_monochrome = built_svg.scene.is_monochrome();
+        let mut scene = Scene::new();
+        create_stroke(&mut scene, ColorU::black(), 10.0);
+        let scene_view_box = scene.view_box;//built_svg.scene.view_box;
+        let scene_is_monochrome = scene.is_monochrome();//built_svg.scene.is_monochrome();
 
         let renderer = Renderer::new(device,
                                      resources,
                                      RectI32::new(Point2DI32::default(), view_box_size),
                                      window_size.device_size());
-        let scene_thread_proxy = SceneThreadProxy::new(built_svg.scene);
+        let scene_thread_proxy = SceneThreadProxy::new(scene);
         scene_thread_proxy.set_drawable_size(view_box_size);
 
         let camera = Camera::new_2d(scene_view_box, view_box_size);
 
-        let mut ui = DemoUI::new();
-        let mut message_epoch = 0;
-        emit_message::<W>(&mut ui, &mut message_epoch, expire_message_event_id, message);
+        let ui = DemoUI::new();
+        let message_epoch = 0;
 
         DemoApp {
             window,
@@ -359,12 +355,6 @@ struct RenderStats {
     stats: Stats,
 }
 
-fn load_scene(resource_loader: &dyn ResourceLoader) -> BuiltSVG {
-    let data: Vec<u8> = resource_loader.slurp(DEFAULT_SVG_VIRTUAL_PATH).unwrap();
-
-    BuiltSVG::from_tree(Tree::from_data(&data, &UsvgOptions::default()).unwrap())
-}
-
 fn build_scene(scene: &Scene,
                build_options: &BuildOptions,
                render_transform: RenderTransform)
@@ -417,31 +407,6 @@ fn scale_factor_for_view_box(view_box: RectF32) -> f32 {
     1.0 / f32::min(view_box.size().x(), view_box.size().y())
 }
 
-fn get_svg_building_message(built_svg: &BuiltSVG) -> String {
-    if built_svg.result_flags.is_empty() {
-        return String::new();
-    }
-    format!("Warning: These features in the SVG are unsupported: {}.", built_svg.result_flags)
-}
-
-fn emit_message<W>(ui: &mut DemoUI,
-                   message_epoch: &mut u32,
-                   expire_message_event_id: u32,
-                   message: String)
-                   where W: Window {
-    if message.is_empty() {
-        return;
-    }
-
-    ui.message = message;
-    let expected_epoch = *message_epoch + 1;
-    *message_epoch = expected_epoch;
-    thread::spawn(move || {
-        thread::sleep(Duration::from_secs(MESSAGE_TIMEOUT_SECS));
-        W::push_user_event(expire_message_event_id, expected_epoch);
-    });
-}
-
 struct Frame {
     render_msg: SceneToMainMsg,
     ui_events: Vec<UIEvent>,
@@ -452,4 +417,19 @@ impl Frame {
     fn new(render_msg: SceneToMainMsg, ui_events: Vec<UIEvent>) -> Frame {
         Frame { render_msg, ui_events, render_stats: None }
     }
+}
+
+fn create_stroke(scene: &mut Scene, color: ColorU, stroke_width: f32) {
+    let paint = Paint{ color };
+    let style = scene.push_paint(&paint);
+    let mut segment = Segment::line(&LineSegmentF32::new(&Point2DF32::new(0.0, 0.0), &Point2DF32::new(100.0, 0.0)));
+    segment.flags.insert(SegmentFlags::CLOSES_SUBPATH);
+    let segments = vec![segment];
+    let outline = Outline::from_segments(segments.into_iter());
+    let mut stroke_to_fill = OutlineStrokeToFill::new(outline, stroke_width);
+    stroke_to_fill.offset();
+    let outline = stroke_to_fill.outline;
+
+    scene.bounds = scene.bounds.union_rect(outline.bounds());
+    scene.objects.push(PathObject::new(outline, style, String::from("test"), PathObjectKind::Stroke));
 }
