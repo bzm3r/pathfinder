@@ -109,14 +109,27 @@ impl BuiltSVG {
                 }
             }
             NodeKind::Path(ref path) if path.visibility == Visibility::Visible => {
+                println!("Interpreting visible path.");
+
                 if let Some(ref fill) = path.fill {
+                    println!("    Interpreting fill.");
                     let style =
                         self.scene.push_paint(&Paint::from_svg_paint(&fill.paint,
                                                                      &mut self.result_flags));
+                    println!("        PaintID: {:?}", style);
+                    println!("        paint_cache keys: {:?}", self.scene.paint_cache.keys());
 
-                    let path = UsvgPathToSegments::new(path.segments.iter().cloned());
-                    let path = Transform2DF32PathIter::new(path, &transform);
-                    let outline = Outline::from_segments(path);
+                    let converted_path = UsvgPathToSegments::new(path.segments.iter().cloned());
+                    let converted_path = Transform2DF32PathIter::new(converted_path, &transform);
+
+                    let debug_path = UsvgPathToSegments::new(path.segments.iter().cloned());
+                    let debug_path = Transform2DF32PathIter::new(debug_path, &transform);
+
+                    for segment in debug_path {
+                        println!("        segment: {:?}", segment);
+                    }
+
+                    let outline = Outline::from_segments(converted_path);
 
                     self.scene.bounds = self.scene.bounds.union_rect(outline.bounds());
                     self.scene.objects.push(PathObject::new(
@@ -128,15 +141,24 @@ impl BuiltSVG {
                 }
 
                 if let Some(ref stroke) = path.stroke {
+                    println!("    Interpreting stroke.");
                     let style =
                         self.scene.push_paint(&Paint::from_svg_paint(&stroke.paint,
                                                                      &mut self.result_flags));
                     let stroke_width =
                         f32::max(stroke.width.value() as f32, HAIRLINE_STROKE_WIDTH);
 
-                    let path = UsvgPathToSegments::new(path.segments.iter().cloned());
-                    let path = Transform2DF32PathIter::new(path, &transform);
-                    let outline = Outline::from_segments(path);
+                    let converted_path = UsvgPathToSegments::new(path.segments.iter().cloned());
+                    let converted_path = Transform2DF32PathIter::new(converted_path, &transform);
+
+                    let debug_path = UsvgPathToSegments::new(path.segments.iter().cloned());
+                    let debug_path = Transform2DF32PathIter::new(debug_path, &transform);
+
+                    for segment in debug_path {
+                        println!("        segment: {:?}", segment);
+                    }
+
+                    let outline = Outline::from_segments(converted_path);
 
                     let mut stroke_to_fill = OutlineStrokeToFill::new(outline, stroke_width);
                     stroke_to_fill.offset();

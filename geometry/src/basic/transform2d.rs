@@ -248,6 +248,7 @@ impl Transform2DF32 {
 }
 
 /// Transforms a path with a SIMD 2D transform.
+#[derive(Clone, Copy)]
 pub struct Transform2DF32PathIter<I>
 where
     I: Iterator<Item = Segment>,
