@@ -91,6 +91,7 @@ impl BuiltSVG {
 
         match *node.borrow() {
             NodeKind::Group(ref group) => {
+                println!("Interpreting group.");
                 if group.clip_path.is_some() {
                     self.result_flags.insert(BuildResultFlags::UNSUPPORTED_CLIP_PATH_ATTR);
                 }
@@ -104,20 +105,19 @@ impl BuiltSVG {
                     self.result_flags.insert(BuildResultFlags::UNSUPPORTED_OPACITY_ATTR);
                 }
 
+                println!("Interpreting child nodes.");
                 for kid in node.children() {
                     self.process_node(&kid, &transform)
                 }
             }
             NodeKind::Path(ref path) if path.visibility == Visibility::Visible => {
-                println!("Interpreting visible path.");
-
                 if let Some(ref fill) = path.fill {
-                    println!("    Interpreting fill.");
+                    println!("Interpreting fill.");
                     let style =
                         self.scene.push_paint(&Paint::from_svg_paint(&fill.paint,
                                                                      &mut self.result_flags));
-                    println!("        PaintID: {:?}", style);
-                    println!("        paint_cache keys: {:?}", self.scene.paint_cache.keys());
+                    println!("    PaintID: {:?}", style);
+                    println!("    paint_cache: {:?}", self.scene.paint_cache);
 
                     let converted_path = UsvgPathToSegments::new(path.segments.iter().cloned());
                     let converted_path = Transform2DF32PathIter::new(converted_path, &transform);
@@ -126,12 +126,14 @@ impl BuiltSVG {
                     let debug_path = Transform2DF32PathIter::new(debug_path, &transform);
 
                     for segment in debug_path {
-                        println!("        segment: {:?}", segment);
+                        println!("    segment: {:?}", segment);
                     }
 
                     let outline = Outline::from_segments(converted_path);
 
+                    println!("    outline: {:?}", outline);
                     self.scene.bounds = self.scene.bounds.union_rect(outline.bounds());
+                    println!("    bounds: {:?}", self.scene.bounds);
                     self.scene.objects.push(PathObject::new(
                         outline,
                         style,
@@ -141,10 +143,14 @@ impl BuiltSVG {
                 }
 
                 if let Some(ref stroke) = path.stroke {
-                    println!("    Interpreting stroke.");
+                    println!("Interpreting stroke.");
                     let style =
                         self.scene.push_paint(&Paint::from_svg_paint(&stroke.paint,
                                                                      &mut self.result_flags));
+
+                    println!("    PaintID: {:?}", style);
+                    println!("    paint_cache: {:?}", self.scene.paint_cache);
+
                     let stroke_width =
                         f32::max(stroke.width.value() as f32, HAIRLINE_STROKE_WIDTH);
 
@@ -155,7 +161,7 @@ impl BuiltSVG {
                     let debug_path = Transform2DF32PathIter::new(debug_path, &transform);
 
                     for segment in debug_path {
-                        println!("        segment: {:?}", segment);
+                        println!("    segment: {:?}", segment);
                     }
 
                     let outline = Outline::from_segments(converted_path);
@@ -164,7 +170,9 @@ impl BuiltSVG {
                     stroke_to_fill.offset();
                     let outline = stroke_to_fill.outline;
 
+                    println!("    outline: {:?}", outline);
                     self.scene.bounds = self.scene.bounds.union_rect(outline.bounds());
+                    println!("    bounds: {:?}", self.scene.bounds);
                     self.scene.objects.push(PathObject::new(
                         outline,
                         style,
@@ -173,37 +181,47 @@ impl BuiltSVG {
                     ));
                 }
             }
-            NodeKind::Path(..) => {}
+            NodeKind::Path(..) => { println!("Interpreting non-visible path.") }
             NodeKind::ClipPath(..) => {
+                println!("Interpreting clip path.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_CLIP_PATH_NODE);
             }
             NodeKind::Defs { .. } => {
+                println!("Interpreting defs.");
                 if node.has_children() {
                     self.result_flags.insert(BuildResultFlags::UNSUPPORTED_DEFS_NODE);
                 }
             }
             NodeKind::Filter(..) => {
+                println!("Interpreting filter.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_FILTER_NODE);
             }
             NodeKind::Image(..) => {
+                println!("Interpreting image.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_IMAGE_NODE);
             }
             NodeKind::LinearGradient(..) => {
+                println!("Interpreting linear gradient.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_LINEAR_GRADIENT_NODE);
             }
             NodeKind::Mask(..) => {
+                println!("Interpreting mask.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_MASK_NODE);
             }
             NodeKind::Pattern(..) => {
+                println!("Interpreting pattern.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_PATTERN_NODE);
             }
             NodeKind::RadialGradient(..) => {
+                println!("Interpreting radial gradient.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_RADIAL_GRADIENT_NODE);
             }
             NodeKind::Svg(..) => {
+                println!("Interpreting nested svg.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_NESTED_SVG_NODE);
             }
             NodeKind::Text(..) => {
+                println!("Interpreting text.");
                 self.result_flags.insert(BuildResultFlags::UNSUPPORTED_TEXT_NODE);
             }
         }

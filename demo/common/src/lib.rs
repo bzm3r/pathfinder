@@ -123,10 +123,13 @@ impl<W> DemoApp<W> where W: Window {
         let scene_view_box = built_svg.scene.view_box;
         let scene_is_monochrome = built_svg.scene.is_monochrome();
 
+        println!("scene: {:?}", built_svg.scene);
+
         let renderer = Renderer::new(device,
                                      resources,
                                      RectI32::new(Point2DI32::default(), view_box_size),
                                      window_size.device_size());
+
         let scene_thread_proxy = SceneThreadProxy::new(built_svg.scene, options.clone());
         scene_thread_proxy.set_drawable_size(view_box_size);
 
