@@ -472,25 +472,37 @@ impl Frame {
 }
 
 fn create_stroke(scene: &mut Scene, color: ColorU, stroke_width: f32) {
+    println!("Creating stroke.");
+
     let paint = Paint { color };
     let style = scene.push_paint(&paint);
+
+    println!("    PaintID: {:?}", style);
+    println!("    paint_cache: {:?}", scene.paint_cache);
+
     let mut segment = Segment::line(&LineSegmentF32::new(
         &Point2DF32::new(0.0, 0.0),
-        &Point2DF32::new(100.0, 0.0),
+        &Point2DF32::new(500.0, 500.0),
     ));
+
     segment.flags.insert(SegmentFlags::FIRST_IN_SUBPATH);
-    segment.flags.insert(SegmentFlags::CLOSES_SUBPATH);
+    println!("    segment: {:?}", segment);
+
     let segments = vec![segment];
     let outline = Outline::from_segments(segments.into_iter());
     let mut stroke_to_fill = OutlineStrokeToFill::new(outline, stroke_width);
     stroke_to_fill.offset();
     let outline = stroke_to_fill.outline;
+    println!("    outline: {:?}", outline);
 
     scene.bounds = scene.bounds.union_rect(outline.bounds());
+    println!("    bounds: {:?}", scene.bounds);
     scene.objects.push(PathObject::new(
         outline,
         style,
-        String::from("test"),
+        String::from("stroke"),
         PathObjectKind::Stroke,
     ));
+
+    scene.view_box = RectF32::new(Point2DF32::new(-70.5, -70.5), Point2DF32::new(391.0, 391.0));
 }
