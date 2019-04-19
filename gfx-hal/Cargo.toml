@@ -1,5 +1,5 @@
 [package]
-name = "pathfinder_gl"
+name = "pathfinder_gfx_hal"
 version = "0.1.0"
 edition = "2018"
 authors = ["Patrick Walton <pcwalton@mimiga.net>"]
@@ -15,6 +15,8 @@ rustache = "0.1"
 gfx-hal = { version = "0.1", git = "https://github.com/gfx-rs/gfx", branch = "master" }
 log = "0.4.0"
 env_logger = "0.5.12"
+shaderc = "0.3.16"
+winit = "0.19.1"
 
 [dependencies.image]
 version = "0.21"
