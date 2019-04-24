@@ -8,9 +8,11 @@ Possible improvement: generate fills in reverse z-order (topmost objects to back
 
 The mask framebuffer is essentially a big atlas of alpha masks. The mask framebuffer is a single-channel (i.e. only contains data for alpha) [half-precision float](https://en.wikipedia.org/wiki/Half-precision_floating-point_format) (16 bits per pixel). Note that each tile would have 16^2 = 256 pixels associated with it in the mask framebuffer. Fills add and subtract the values stored within the mask framebuffer, in order to generate representations of "area coverage"
 
-Possible improvement: de-duplicate alpha tiles.
+Possible improvement: de-duplicate alpha tiles (i.e. generating a sparse virtual texture of alpha tiles).
 
 Before rendering tiles, Pathfinder throws out all tiles that are covered up by a solid tile above them. This is handled by the ZBuffer struct, which is a tile map that stores the topmost solid tile. The topmost tile is currently determined using the CPU. Note that this occlusion culling occurs at the level of 16x16 tiles: i.e. the CPU side ZBuffer needs to only be 1/256 the size of a GPU side depth buffer (recall that there are 256 pixels per tile, and the GPU-side Z-buffer is per-pixel).
 
 
-Tiles in Pathfinder have an area of 16 pixels by 16 pixels. Why are tiles 16x16? Having a fixed tile size of 16x16 allows for a very space efficient packing of fills and alpha tile objects. Each fill operation is 64 bits: two sets of (x, y) pairs where x and y are 12 bits each, interpreted in [4.8 fixed point format](http://pfe.sourceforge.net/4thtutor/4thl4-8.htm) (so, 48 bits total for the two (x,y) pairs), and a 16 bits for the tile ID. <This meshes well for some reason with how large alpha tiles are: 16*256?>
+Tiles in Pathfinder have an area of 16 pixels by 16 pixels. Why are tiles 16x16? Having a fixed tile size of 16x16 allows for a very space efficient packing of fills and alpha tile objects. Each fill operation is 64 bits: two sets of (x, y) pairs where x and y are 12 bits each, interpreted in [4.8 fixed point format](http://pfe.sourceforge.net/4thtutor/4thl4-8.htm) (so, 48 bits total for the two (x,y) pairs), and a 16 bits for the tile ID. 
+12:57:59 <pcwalton> in other words, 1/256ths of a pixel
+12:58:08 <pcwalton> with 16x16 tiles that fits in perfectly :)
