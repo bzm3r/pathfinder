@@ -21,7 +21,7 @@ use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gpu::resources::ResourceLoader;
-use pathfinder_gpu::{BlendState, BufferData, BufferTarget, BufferUploadMode, Device, Primitive};
+use pathfinder_gpu::{BlendState, BufferData, BufferTarget, BufferUploadMode, PfDevice, Primitive};
 use pathfinder_gpu::{RenderState, UniformData, VertexAttrType};
 use pathfinder_simd::default::F32x4;
 use serde_json;
@@ -63,7 +63,7 @@ static QUAD_INDICES:              [u32; 6] = [0, 1, 3, 1, 2, 3];
 static RECT_LINE_INDICES:         [u32; 8] = [0, 1, 1, 2, 2, 3, 3, 0];
 static OUTLINE_RECT_LINE_INDICES: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
-pub struct UI<D> where D: Device {
+pub struct UI<D> where D: PfDevice {
     pub event_queue: UIEventQueue,
     pub mouse_position: Point2DF32,
 
@@ -80,7 +80,7 @@ pub struct UI<D> where D: Device {
     corner_outline_texture: D::Texture,
 }
 
-impl<D> UI<D> where D: Device {
+impl<D> UI<D> where D: PfDevice {
     pub fn new(device: &D, resources: &dyn ResourceLoader, framebuffer_size: Point2DI32) -> UI<D> {
         let texture_program = DebugTextureProgram::new(device, resources);
         let texture_vertex_array = DebugTextureVertexArray::new(device, &texture_program);
@@ -523,7 +523,7 @@ impl<D> UI<D> where D: Device {
     }
 }
 
-struct DebugTextureProgram<D> where D: Device {
+struct DebugTextureProgram<D> where D: PfDevice {
     program: D::Program,
     framebuffer_size_uniform: D::Uniform,
     texture_size_uniform: D::Uniform,
@@ -531,7 +531,7 @@ struct DebugTextureProgram<D> where D: Device {
     color_uniform: D::Uniform,
 }
 
-impl<D> DebugTextureProgram<D> where D: Device {
+impl<D> DebugTextureProgram<D> where D: PfDevice {
     fn new(device: &D, resources: &dyn ResourceLoader) -> DebugTextureProgram<D> {
         let program = device.create_program(resources, "debug_texture");
         let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
@@ -548,13 +548,13 @@ impl<D> DebugTextureProgram<D> where D: Device {
     }
 }
 
-struct DebugTextureVertexArray<D> where D: Device {
+struct DebugTextureVertexArray<D> where D: PfDevice {
     vertex_array: D::VertexArray,
     vertex_buffer: D::Buffer,
     index_buffer: D::Buffer,
 }
 
-impl<D> DebugTextureVertexArray<D> where D: Device {
+impl<D> DebugTextureVertexArray<D> where D: PfDevice {
     fn new(device: &D, debug_texture_program: &DebugTextureProgram<D>)
            -> DebugTextureVertexArray<D> {
         let (vertex_buffer, index_buffer) = (device.create_buffer(), device.create_buffer());
@@ -586,13 +586,13 @@ impl<D> DebugTextureVertexArray<D> where D: Device {
     }
 }
 
-struct DebugSolidVertexArray<D> where D: Device {
+struct DebugSolidVertexArray<D> where D: PfDevice {
     vertex_array: D::VertexArray,
     vertex_buffer: D::Buffer,
     index_buffer: D::Buffer,
 }
 
-impl<D> DebugSolidVertexArray<D> where D: Device {
+impl<D> DebugSolidVertexArray<D> where D: PfDevice {
     fn new(device: &D, debug_solid_program: &DebugSolidProgram<D>) -> DebugSolidVertexArray<D> {
         let (vertex_buffer, index_buffer) = (device.create_buffer(), device.create_buffer());
         let vertex_array = device.create_vertex_array();
@@ -614,13 +614,13 @@ impl<D> DebugSolidVertexArray<D> where D: Device {
     }
 }
 
-struct DebugSolidProgram<D> where D: Device {
+struct DebugSolidProgram<D> where D: PfDevice {
     program: D::Program,
     framebuffer_size_uniform: D::Uniform,
     color_uniform: D::Uniform,
 }
 
-impl<D> DebugSolidProgram<D> where D: Device {
+impl<D> DebugSolidProgram<D> where D: PfDevice {
     fn new(device: &D, resources: &dyn ResourceLoader) -> DebugSolidProgram<D> {
         let program = device.create_program(resources, "debug_solid");
         let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
@@ -672,7 +672,7 @@ struct CornerRects {
 }
 
 impl CornerRects {
-    fn new<D>(device: &D, rect: RectI32, texture: &D::Texture) -> CornerRects where D: Device {
+    fn new<D>(device: &D, rect: RectI32, texture: &D::Texture) -> CornerRects where D: PfDevice {
         let size = device.texture_size(texture);
         CornerRects {
             upper_left:  RectI32::new(rect.origin(),                                     size),
@@ -683,7 +683,7 @@ impl CornerRects {
     }
 }
 
-fn set_color_uniform<D>(device: &D, uniform: &D::Uniform, color: ColorU) where D: Device {
+fn set_color_uniform<D>(device: &D, uniform: &D::Uniform, color: ColorU) where D: PfDevice {
     let color = F32x4::new(color.r as f32, color.g as f32, color.b as f32, color.a as f32);
     device.set_uniform(uniform, UniformData::Vec4(color * F32x4::splat(1.0 / 255.0)));
 }

@@ -11,11 +11,11 @@
 //! GPU rendering code specifically for the demo.
 
 use pathfinder_gpu::resources::ResourceLoader;
-use pathfinder_gpu::{BufferTarget, Device, VertexAttrType};
+use pathfinder_gpu::{BufferTarget, PfDevice, VertexAttrType};
 
 pub struct GroundProgram<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     pub program: D::Program,
     pub transform_uniform: D::Uniform,
@@ -26,7 +26,7 @@ where
 
 impl<D> GroundProgram<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     pub fn new(device: &D, resources: &dyn ResourceLoader) -> GroundProgram<D> {
         let program = device.create_program(resources, "demo_ground");
@@ -46,14 +46,14 @@ where
 
 pub struct GroundVertexArray<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     pub vertex_array: D::VertexArray,
 }
 
 impl<D> GroundVertexArray<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     pub fn new(
         device: &D,

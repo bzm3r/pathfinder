@@ -1,4 +1,4 @@
-// pathfinder/demo/common/src/renderer.rs
+// pathfinder/demo/common/src/renderer-old.rs
 //
 // Copyright © 2019 The Pathfinder Project Developers.
 //
@@ -15,7 +15,7 @@ use crate::window::{View, Window};
 use crate::{BackgroundColor, DemoApp, UIVisibility};
 use image::ColorType;
 use pathfinder_geometry::color::{ColorF, ColorU};
-use pathfinder_gpu::{ClearParams, DepthFunc, DepthState, Device, Primitive, RenderState};
+use pathfinder_gpu::{ClearParams, DepthFunc, DepthState, PfDevice, Primitive, RenderState};
 use pathfinder_gpu::{TextureFormat, UniformData};
 use pathfinder_geometry::basic::transform3d::Transform3DF32;
 use pathfinder_renderer::gpu::renderer::{DestFramebuffer, RenderMode};

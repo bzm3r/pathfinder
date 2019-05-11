@@ -14,7 +14,7 @@ use pathfinder_geometry::basic::rect::RectF32;
 use pathfinder_geometry::color::ColorF;
 use pathfinder_gl::{GLDevice, GLVersion};
 use pathfinder_gpu::resources::FilesystemResourceLoader;
-use pathfinder_gpu::{ClearParams, Device};
+use pathfinder_gpu::{ClearParams, PfDevice};
 use pathfinder_renderer::concurrent::rayon::RayonExecutor;
 use pathfinder_renderer::concurrent::scene_proxy::SceneProxy;
 use pathfinder_renderer::gpu::renderer::{DestFramebuffer, Renderer};

@@ -17,7 +17,7 @@ use gl::types::{GLboolean, GLchar, GLenum, GLfloat, GLint, GLsizei, GLsizeiptr, 
 use pathfinder_geometry::basic::point::Point2DI32;
 use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_gpu::{BlendState, BufferData, BufferTarget, BufferUploadMode, ClearParams};
-use pathfinder_gpu::{DepthFunc, Device, Primitive, RenderState, ShaderKind, StencilFunc};
+use pathfinder_gpu::{DepthFunc, PfDevice, Primitive, RenderState, ShaderKind, StencilFunc};
 use pathfinder_gpu::{TextureFormat, UniformData, VertexAttrType};
 use pathfinder_simd::default::F32x4;
 use rustache::{HashBuilder, Render};
@@ -149,7 +149,7 @@ impl GLDevice {
     }
 }
 
-impl Device for GLDevice {
+impl PfDevice for GLDevice {
     type Buffer = GLBuffer;
     type Framebuffer = GLFramebuffer;
     type Program = GLProgram;

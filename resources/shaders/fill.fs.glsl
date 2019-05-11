@@ -12,12 +12,12 @@
 
 precision highp float;
 
-uniform sampler2D uAreaLUT;
+layout(set = 0, binding = 0) uniform sampler2D uAreaLUT;
 
-in vec2 vFrom;
-in vec2 vTo;
+layout(location = 0) in vec2 vFrom;
+layout(location = 1) in vec2 vTo;
+layout(location = 0) out vec4 oFragColor;
 
-out vec4 oFragColor;
 
 void main() {
     // Unpack.

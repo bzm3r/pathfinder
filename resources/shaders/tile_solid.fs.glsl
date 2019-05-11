@@ -12,9 +12,9 @@
 
 precision highp float;
 
-in vec4 vColor;
+layout(location = 0) in vec4 vColor;
 
-out vec4 oFragColor;
+layout(location = 0) out vec4 oFragColor;
 
 void main() {
     oFragColor = vColor;

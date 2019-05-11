@@ -8,8 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-uniform sampler2D uFillColorsTexture;
-uniform vec2 uFillColorsTextureSize;
+layout(set = 1, binding = 0) uniform sampler2D uFillColorsTexture;
+layout(set = 1, binding = 1) uniform struct FillColorsTexture {
+    uniform vec2 uFillColorsTexture;
+} color_texture;
 
 vec2 computeFillColorTexCoord(uint object, vec2 textureSize) {
     uint width = uint(textureSize.x);
@@ -18,5 +20,5 @@ vec2 computeFillColorTexCoord(uint object, vec2 textureSize) {
 
 vec4 getFillColor(uint object) {
     vec2 colorTexCoord = computeFillColorTexCoord(object, uFillColorsTextureSize);
-    return texture(uFillColorsTexture, colorTexCoord);
+    return texture(color_texture.uFillColorsTexture, colorTexCoord);
 }

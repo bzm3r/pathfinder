@@ -14,7 +14,7 @@ use crate::{BackgroundColor, Options};
 use pathfinder_geometry::basic::point::Point2DI32;
 use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_gpu::resources::ResourceLoader;
-use pathfinder_gpu::Device;
+use pathfinder_gpu::PfDevice;
 use pathfinder_renderer::gpu::debug::DebugUI;
 use pathfinder_ui::{BUTTON_HEIGHT, BUTTON_TEXT_OFFSET, BUTTON_WIDTH, FONT_ASCENT, PADDING};
 use pathfinder_ui::{TEXT_COLOR, TOOLTIP_HEIGHT, WINDOW_COLOR};
@@ -46,7 +46,7 @@ static SCREENSHOT_PNG_NAME: &'static str = "demo-screenshot";
 
 pub struct DemoUI<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     effects_texture: D::Texture,
     open_texture: D::Texture,
@@ -73,7 +73,7 @@ where
 
 impl<D> DemoUI<D>
 where
-    D: Device,
+    D: PfDevice,
 {
     pub fn new(device: &D, resources: &dyn ResourceLoader, options: Options) -> DemoUI<D> {
         let effects_texture = device.create_texture_from_png(resources, EFFECTS_PNG_NAME);

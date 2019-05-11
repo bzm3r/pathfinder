@@ -35,7 +35,7 @@ use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_geometry::basic::transform2d::Transform2DF32;
 use pathfinder_gl::GLDevice;
 use pathfinder_gl::GLVersion;
-use pathfinder_gpu::Device;
+use pathfinder_gpu::PfDevice;
 use pathfinder_gpu::resources::FilesystemResourceLoader;
 use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_renderer::builder::RenderOptions;

@@ -12,27 +12,29 @@
 
 precision highp float;
 
-uniform vec2 uFramebufferSize;
-uniform vec2 uTileSize;
+layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+    uniform vec2 uFramebufferSize;
+    uniform vec2 uTileSize;
+} uniforms;
 
-in vec2 aTessCoord;
-in uint aFromPx;
-in uint aToPx;
-in vec2 aFromSubpx;
-in vec2 aToSubpx;
-in uint aTileIndex;
+layout(location = 0) in vec2 aTessCoord;
+layout(location = 1) in uint aFromPx;
+layout(location = 2) in uint aToPx;
+layout(location = 3) in vec2 aFromSubpx;
+layout(location = 4) in vec2 aToSubpx;
+layout(location = 5) in uint aTileIndex;
 
-out vec2 vFrom;
-out vec2 vTo;
+layout(location = 0) out vec2 vFrom;
+layout(location = 1) out vec2 vTo;
 
 vec2 computeTileOffset(uint tileIndex, float stencilTextureWidth) {
-    uint tilesPerRow = uint(stencilTextureWidth / uTileSize.x);
+    uint tilesPerRow = uint(stencilTextureWidth / uniforms.uTileSize.x);
     uvec2 tileOffset = uvec2(aTileIndex % tilesPerRow, aTileIndex / tilesPerRow);
-    return vec2(tileOffset) * uTileSize;
+    return vec2(tileOffset) * uniforms.uTileSize;
 }
 
 void main() {
-    vec2 tileOrigin = computeTileOffset(aTileIndex, uFramebufferSize.x);
+    vec2 tileOrigin = computeTileOffset(aTileIndex, uniforms.uFramebufferSize.x);
 
     vec2 from = vec2(aFromPx & 15u, aFromPx >> 4u) + aFromSubpx;
     vec2 to = vec2(aToPx & 15u, aToPx >> 4u) + aToSubpx;
@@ -45,10 +47,10 @@ void main() {
     if (aTessCoord.y < 0.5)
         position.y = floor(min(from.y, to.y));
     else
-        position.y = uTileSize.y;
+        position.y = uniforms.uTileSize.y;
 
     vFrom = from - position;
     vTo = to - position;
 
-    gl_Position = vec4((tileOrigin + position) / uFramebufferSize * 2.0 - 1.0, 0.0, 1.0);
+    gl_Position = vec4((tileOrigin + position) / uniforms.uFramebufferSize * 2.0 - 1.0, 0.0, 1.0);
 }

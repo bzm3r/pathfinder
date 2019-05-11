@@ -8,8 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-uniform vec4 uFillColor;
+layout(set = 0, binding = 0) uniform struct FillColorStruct {
+    vec4 uFillColor;
+} fill_color;
 
 vec4 getFillColor(uint object) {
-    return uFillColor;
+    return fill_color.uFillColor;
 }

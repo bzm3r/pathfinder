@@ -23,7 +23,7 @@ use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
 use pathfinder_geometry::basic::rect::RectF32;
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gl::GLDevice;
-use pathfinder_gpu::Device;
+use pathfinder_gpu::PfDevice;
 use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_renderer::concurrent::scene_proxy::{RenderCommandStream, SceneProxy};
 use pathfinder_renderer::gpu::renderer::{DestFramebuffer, RenderStats, Renderer};
@@ -107,7 +107,7 @@ pub struct DemoApp<W> where W: Window {
     scene_proxy: SceneProxy,
     renderer: Renderer<GLDevice>,
 
-    scene_framebuffer: Option<<GLDevice as Device>::Framebuffer>,
+    scene_framebuffer: Option<<GLDevice as PfDevice>::Framebuffer>,
 
     ground_program: GroundProgram<GLDevice>,
     ground_vertex_array: GroundVertexArray<GLDevice>,
