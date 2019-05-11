@@ -27,12 +27,14 @@ pub(crate) struct BuiltObject {
 }
 
 pub enum RenderCommand {
-    Start { object_count: usize, bounding_quad: BoundingQuad },
+    Start { path_count: usize, bounding_quad: BoundingQuad },
     AddShaders(Vec<ObjectShader>),
     AddFills(Vec<FillBatchPrimitive>),
     FlushFills,
-    AlphaTile(Vec<AlphaTileBatchPrimitive>),
-    SolidTile(Vec<SolidTileBatchPrimitive>),
+    AddAlphaTiles(Vec<AlphaTileBatchPrimitive>),
+    FlushAlphaTiles,
+    AddSolidTiles(Vec<SolidTileBatchPrimitive>),
+    FlushSolidTiles,
     Finish { build_time: Duration },
 }
 
@@ -89,12 +91,14 @@ impl Debug for RenderCommand {
             }
             RenderCommand::AddFills(ref fills) => write!(formatter, "AddFills(x{})", fills.len()),
             RenderCommand::FlushFills => write!(formatter, "FlushFills"),
-            RenderCommand::AlphaTile(ref tiles) => {
-                write!(formatter, "AlphaTile(x{})", tiles.len())
+            RenderCommand::AddAlphaTiles(ref tiles) => {
+                write!(formatter, "AddAlphaTiles(x{})", tiles.len())
             }
-            RenderCommand::SolidTile(ref tiles) => {
-                write!(formatter, "SolidTile(x{})", tiles.len())
+            RenderCommand::FlushAlphaTiles => write!(formatter, "FlushAlphaTiles"),
+            RenderCommand::AddSolidTiles(ref tiles) => {
+                write!(formatter, "AddSolidTiles(x{})", tiles.len())
             }
+            RenderCommand::FlushSolidTiles => write!(formatter, "FlushSolidTiles"),
             RenderCommand::Finish { .. } => write!(formatter, "Finish"),
         }
     }

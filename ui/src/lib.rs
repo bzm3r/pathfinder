@@ -43,7 +43,7 @@ const DEBUG_SOLID_VERTEX_SIZE:   usize = 4;
 
 const ICON_SIZE: i32 = 48;
 
-const SWITCH_SEGMENT_SIZE: i32 = 96;
+const SEGMENT_SIZE: i32 = 96;
 
 pub static TEXT_COLOR:   ColorU = ColorU { r: 255, g: 255, b: 255, a: 255      };
 pub static WINDOW_COLOR: ColorU = ColorU { r: 0,   g: 0,   b: 0,   a: 255 - 90 };
@@ -62,6 +62,7 @@ static CORNER_OUTLINE_PNG_NAME: &'static str = "debug-corner-outline";
 static QUAD_INDICES:              [u32; 6] = [0, 1, 3, 1, 2, 3];
 static RECT_LINE_INDICES:         [u32; 8] = [0, 1, 1, 2, 2, 3, 3, 0];
 static OUTLINE_RECT_LINE_INDICES: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
 
 pub struct UI<D> where D: PfDevice {
     pub event_queue: UIEventQueue,
@@ -94,7 +95,7 @@ impl<D> UI<D> where D: PfDevice {
         let corner_outline_texture = device.create_texture_from_png(resources,
                                                                     CORNER_OUTLINE_PNG_NAME);
 
-        UI {
+        UIPresenter {
             event_queue: UIEventQueue::new(),
             mouse_position: Point2DF32::default(),
 
@@ -249,8 +250,8 @@ impl<D> UI<D> where D: PfDevice {
     }
 
     #[inline]
-    pub fn measure_switch(&self, segment_count: u8) -> i32 {
-        SWITCH_SEGMENT_SIZE * segment_count as i32 + (segment_count - 1) as i32
+    pub fn measure_segmented_control(&self, segment_count: u8) -> i32 {
+        SEGMENT_SIZE * segment_count as i32 + (segment_count - 1) as i32
     }
 
     pub fn draw_solid_rounded_rect(&self, device: &D, rect: RectI32, color: ColorU) {
@@ -427,83 +428,106 @@ impl<D> UI<D> where D: PfDevice {
                             segment_labels: &[&str],
                             mut value: u8)
                             -> u8 {
-        value = self.draw_switch(device, origin, value, segment_labels.len() as u8);
+        if let Some(new_value) = self.draw_segmented_control(device,
+                                                             origin,
+                                                             Some(value),
+                                                             segment_labels.len() as u8) {
+            value = new_value;
+        }
 
         origin = origin + Point2DI32::new(0, BUTTON_TEXT_OFFSET);
         for (segment_index, segment_label) in segment_labels.iter().enumerate() {
             let label_width = self.measure_text(segment_label);
-            let offset = SWITCH_SEGMENT_SIZE / 2 - label_width / 2;
+            let offset = SEGMENT_SIZE / 2 - label_width / 2;
             self.draw_text(device,
                            segment_label,
                            origin + Point2DI32::new(offset, 0),
                            segment_index as u8 == value);
-            origin += Point2DI32::new(SWITCH_SEGMENT_SIZE + 1, 0);
+            origin += Point2DI32::new(SEGMENT_SIZE + 1, 0);
         }
 
         value
     }
 
-    /// TODO(pcwalton): Support switches with more than two segments.
-    pub fn draw_image_switch(&mut self,
-                             device: &D,
-                             origin: Point2DI32,
-                             off_texture: &D::Texture,
-                             on_texture: &D::Texture,
-                             mut value: bool)
-                             -> bool {
-        value = self.draw_switch(device, origin, value as u8, 2) != 0;
+    pub fn draw_image_segmented_control(&mut self,
+                                        device: &D,
+                                        mut origin: Point2DI32,
+                                        segment_textures: &[&D::Texture],
+                                        mut value: Option<u8>)
+                                        -> Option<u8> {
+        let mut clicked_segment = None;
+        if let Some(segment_index) = self.draw_segmented_control(device,
+                                                                 origin,
+                                                                 value,
+                                                                 segment_textures.len() as u8) {
+            if let Some(ref mut value) = value {
+                *value = segment_index;
+            }
+            clicked_segment = Some(segment_index);
+        }
 
-        let off_offset = SWITCH_SEGMENT_SIZE / 2 - device.texture_size(off_texture).x() / 2;
-        let on_offset = SWITCH_SEGMENT_SIZE + SWITCH_SEGMENT_SIZE / 2 -
-            device.texture_size(on_texture).x() / 2;
+        for (segment_index, segment_texture) in segment_textures.iter().enumerate() {
+            let texture_width = device.texture_size(segment_texture).x();
+            let offset = Point2DI32::new(SEGMENT_SIZE / 2 - texture_width / 2, PADDING);
+            let color = if Some(segment_index as u8) == value {
+                WINDOW_COLOR
+            } else {
+                TEXT_COLOR
+            };
 
-        let off_color = if !value { WINDOW_COLOR } else { TEXT_COLOR };
-        let on_color  = if  value { WINDOW_COLOR } else { TEXT_COLOR };
+            self.draw_texture(device, origin + offset, segment_texture, color);
+            origin += Point2DI32::new(SEGMENT_SIZE + 1, 0);
+        }
 
-        self.draw_texture(device,
-                          origin + Point2DI32::new(off_offset, PADDING),
-                          off_texture,
-                          off_color);
-        self.draw_texture(device,
-                          origin + Point2DI32::new(on_offset,  PADDING),
-                          on_texture,
-                          on_color);
-
-        value
+        clicked_segment
     }
 
-    fn draw_switch(&mut self, device: &D, origin: Point2DI32, mut value: u8, segment_count: u8)
-                   -> u8 {
-        let widget_width = self.measure_switch(segment_count);
+    fn draw_segmented_control(&mut self,
+                              device: &D,
+                              origin: Point2DI32,
+                              mut value: Option<u8>,
+                              segment_count: u8)
+                              -> Option<u8> {
+        let widget_width = self.measure_segmented_control(segment_count);
         let widget_rect = RectI32::new(origin, Point2DI32::new(widget_width, BUTTON_HEIGHT));
+
+        let mut clicked_segment = None;
         if let Some(position) = self.event_queue.handle_mouse_down_in_rect(widget_rect) {
-            let segment = (position.x() / (SWITCH_SEGMENT_SIZE + 1)) as u8;
-            value = segment.min(segment_count - 1);
+            let segment = ((position.x() / (SEGMENT_SIZE + 1)) as u8).min(segment_count - 1);
+            if let Some(ref mut value) = value {
+                *value = segment;
+            }
+            clicked_segment = Some(segment);
         }
 
         self.draw_solid_rounded_rect(device, widget_rect, WINDOW_COLOR);
         self.draw_rounded_rect_outline(device, widget_rect, OUTLINE_COLOR);
 
-        let highlight_size = Point2DI32::new(SWITCH_SEGMENT_SIZE, BUTTON_HEIGHT);
-        let x_offset = value as i32 * SWITCH_SEGMENT_SIZE + (value as i32 - 1);
-        self.draw_solid_rounded_rect(device,
-                                     RectI32::new(origin + Point2DI32::new(x_offset, 0),
-                                                  highlight_size),
-                                     TEXT_COLOR);
-
-        let mut segment_origin = origin + Point2DI32::new(SWITCH_SEGMENT_SIZE + 1, 0);
-        for next_segment_index in 1..segment_count {
-            let prev_segment_index = next_segment_index - 1;
-            if value != prev_segment_index && value != next_segment_index {
-                self.draw_line(device,
-                               segment_origin,
-                               segment_origin + Point2DI32::new(0, BUTTON_HEIGHT),
-                               TEXT_COLOR);
-            }
-            segment_origin = segment_origin + Point2DI32::new(SWITCH_SEGMENT_SIZE + 1, 0);
+        if let Some(value) = value {
+            let highlight_size = Point2DI32::new(SEGMENT_SIZE, BUTTON_HEIGHT);
+            let x_offset = value as i32 * SEGMENT_SIZE + (value as i32 - 1);
+            self.draw_solid_rounded_rect(device,
+                                        RectI32::new(origin + Point2DI32::new(x_offset, 0),
+                                                    highlight_size),
+                                        TEXT_COLOR);
         }
 
-        value
+        let mut segment_origin = origin + Point2DI32::new(SEGMENT_SIZE + 1, 0);
+        for next_segment_index in 1..segment_count {
+            let prev_segment_index = next_segment_index - 1;
+            match value {
+                Some(value) if value == prev_segment_index || value == next_segment_index => {}
+                _ => {
+                    self.draw_line(device,
+                                segment_origin,
+                                segment_origin + Point2DI32::new(0, BUTTON_HEIGHT),
+                                TEXT_COLOR);
+                }
+            }
+            segment_origin = segment_origin + Point2DI32::new(SEGMENT_SIZE + 1, 0);
+        }
+
+        clicked_segment
     }
 
     pub fn draw_tooltip(&self, device: &D, string: &str, rect: RectI32) {

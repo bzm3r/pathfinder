@@ -22,6 +22,7 @@ use pathfinder_renderer::gpu::renderer::{DestFramebuffer, RenderMode};
 use pathfinder_renderer::gpu_data::RenderCommand;
 use pathfinder_renderer::options::RenderTransform;
 use pathfinder_renderer::post::DEFRINGING_KERNEL_CORE_GRAPHICS;
+use std::path::PathBuf;
 
 const GROUND_SOLID_COLOR: ColorU = ColorU {
     r: 80,
@@ -42,7 +43,7 @@ const GRIDLINE_COUNT: i32 = 10;
 impl<W> DemoApp<W> where W: Window {
     pub fn prepare_frame_rendering(&mut self) -> u32 {
         // Make the GL context current.
-        let view = self.ui.mode.view(0);
+        let view = self.ui_model.mode.view(0);
         self.window.make_current(view);
 
         // Set up framebuffers.
@@ -101,7 +102,7 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     pub fn draw_scene(&mut self) {
-        let view = self.ui.mode.view(0);
+        let view = self.ui_model.mode.view(0);
         self.window.make_current(view);
 
         if self.camera.mode() != Mode::VR {
@@ -212,7 +213,7 @@ impl<W> DemoApp<W> where W: Window {
             RenderTransform::Perspective(perspective) => perspective,
         };
 
-        if self.ui.background_color == BackgroundColor::Transparent {
+        if self.ui_model.background_color == BackgroundColor::Transparent {
             return;
         }
 
@@ -264,8 +265,8 @@ impl<W> DemoApp<W> where W: Window {
                 self.renderer.set_render_mode(RenderMode::Monochrome {
                     fg_color: fg_color.to_f32(),
                     bg_color: self.background_color().to_f32(),
-                    gamma_correction: self.ui.gamma_correction_effect_enabled,
-                    defringing_kernel: if self.ui.subpixel_aa_effect_enabled {
+                    gamma_correction: self.ui_model.gamma_correction_effect_enabled,
+                    defringing_kernel: if self.ui_model.subpixel_aa_effect_enabled {
                         // TODO(pcwalton): Select FreeType defringing kernel as necessary.
                         Some(DEFRINGING_KERNEL_CORE_GRAPHICS)
                     } else {
@@ -275,7 +276,7 @@ impl<W> DemoApp<W> where W: Window {
             }
         }
 
-        if self.ui.mode == Mode::TwoD {
+        if self.ui_model.mode == Mode::TwoD {
             self.renderer.disable_depth();
         } else {
             self.renderer.enable_depth();
@@ -300,19 +301,14 @@ impl<W> DemoApp<W> where W: Window {
         self.renderer.end_scene();
     }
 
-    pub fn maybe_take_screenshot(&mut self) {
-        let screenshot_path = match self.pending_screenshot_path.take() {
-            None => return,
-            Some(screenshot_path) => screenshot_path,
-        };
-
+    pub fn take_raster_screenshot(&mut self, path: PathBuf) {
         let drawable_size = self.window_size.device_size();
         let pixels = self
             .renderer
             .device
             .read_pixels_from_default_framebuffer(drawable_size);
         image::save_buffer(
-            screenshot_path,
+            path,
             &pixels,
             drawable_size.x() as u32,
             drawable_size.y() as u32,

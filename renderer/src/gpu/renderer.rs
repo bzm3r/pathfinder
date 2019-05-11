@@ -16,6 +16,7 @@ use hal;
 use pathfinder_geometry as pfgeom;
 use pathfinder_gpu as pfgpu;
 use pathfinder_simd as pfsimd;
+use pathfinder_resources as pfresources;
 use std::cmp;
 use std::collections::VecDeque;
 use std::mem;
@@ -38,6 +39,8 @@ const FILL_COLORS_TEXTURE_WIDTH: i32 = 256;
 const FILL_COLORS_TEXTURE_HEIGHT: i32 = 256;
 
 const MAX_FILLS_PER_BATCH: usize = 0x4000;
+const MAX_ALPHA_TILES_PER_BATCH: usize = 0x4000;
+const MAX_SOLID_TILES_PER_BATCH: usize = 0x4000;
 
 pub struct Renderer {
     // Device
@@ -70,6 +73,8 @@ pub struct Renderer {
     // Rendering state
     mask_framebuffer_cleared: bool,
     buffered_fills: Vec<gpu_data::FillBatchPrimitive>,
+    buffered_alpha_tiles: Vec<gpu_data::AlphaTileBatchPrimitive>,
+    buffered_solid_tiles: Vec<gpu_data::SolidTileBatchPrimitive>,
 
     // Extra info
     use_depth: bool,
@@ -79,7 +84,7 @@ impl Renderer {
     pub fn new(
         window: &winit::Window,
         instance_name: &str,
-        resources: &dyn ResourceLoader,
+        resources: &dyn pfresources: ResourceLoader,
         dest_framebuffer: Framebuffer,
     ) -> Renderer {
         let device = Device::new(window, instance_name);
@@ -122,7 +127,8 @@ impl Renderer {
             pfgeom::basic::point::Point2DI32::new(FILL_COLORS_TEXTURE_WIDTH, FILL_COLORS_TEXTURE_HEIGHT);
         let fill_colors_texture = device.create_texture(TextureFormat::RGBA8, fill_colors_size);
 
-        let debug_ui = DebugUI::new(&device, resources, dest_framebuffer.window_size(&device));
+        let window_size = dest_framebuffer.window_size(&device);
+        let debug_ui_presenter = DebugUIPresenter::new(&device, resources, window_size);
 
         let renderer = Renderer {
             device,
@@ -154,13 +160,15 @@ impl Renderer {
             reprojection_vertex_array,
 
             stats: RenderStats::default(),
-            current_timer_query: None,
-            pending_timer_queries: VecDeque::new(),
+            current_timers: RenderTimers::new(),
+            pending_timers: VecDeque::new(),
             free_timer_queries: vec![],
-            debug_ui,
+            debug_ui_presenter,
 
             mask_framebuffer_cleared: false,
             buffered_fills: vec![],
+            buffered_alpha_tiles: vec![],
+            buffered_solid_tiles: vec![],
 
             render_mode: RenderMode::default(),
             use_depth: false,
@@ -175,42 +183,36 @@ impl Renderer {
     pub fn begin_scene(&mut self) {
         self.init_postprocessing_framebuffer();
 
-        let timer_query = self
-            .free_timer_queries
-            .pop()
-            .unwrap_or_else(|| self.device.create_timer_query());
-        self.device.begin_timer_query(&timer_query);
-        self.current_timer_query = Some(timer_query);
-
         self.mask_framebuffer_cleared = false;
         self.stats = RenderStats::default();
     }
 
     pub fn render_command(&mut self, command: &gpu_data::RenderCommand) {
         match *command {
-            gpu_data::RenderCommand::Start {
+            RenderCommand::Start {
                 bounding_quad,
-                object_count,
+                path_count,
             } => {
                 if self.use_depth {
                     self.draw_stencil(&bounding_quad);
                 }
-                self.stats.object_count = object_count;
+                self.stats.path_count = path_count;
             }
-            gpu_data::RenderCommand::AddShaders(ref shaders) => self.upload_shaders(shaders),
-            gpu_data::RenderCommand::AddFills(ref fills) => self.add_fills(fills),
-            gpu_data::RenderCommand::FlushFills => self.draw_buffered_fills(),
-            gpu_data::RenderCommand::SolidTile(ref solid_tiles) => {
-                let count = solid_tiles.len();
-                self.stats.solid_tile_count += count;
-                self.upload_solid_tiles(solid_tiles);
-                self.draw_solid_tiles(count as u32);
+            RenderCommand::AddShaders(ref shaders) => self.upload_shaders(shaders),
+            RenderCommand::AddFills(ref fills) => self.add_fills(fills),
+            RenderCommand::FlushFills => {
+                self.begin_composite_timer_query();
+                self.draw_buffered_fills();
             }
-            gpu_data::RenderCommand::AlphaTile(ref alpha_tiles) => {
-                let count = alpha_tiles.len();
-                self.stats.alpha_tile_count += count;
-                self.upload_alpha_tiles(alpha_tiles);
-                self.draw_alpha_tiles(count as u32);
+            RenderCommand::AddSolidTiles(ref solid_tiles) => self.add_solid_tiles(solid_tiles),
+            RenderCommand::FlushSolidTiles => {
+                self.begin_composite_timer_query();
+                self.draw_buffered_solid_tiles();
+            }
+            RenderCommand::AddAlphaTiles(ref alpha_tiles) => self.add_alpha_tiles(alpha_tiles),
+            RenderCommand::FlushAlphaTiles => {
+                self.begin_composite_timer_query();
+                self.draw_buffered_alpha_tiles();
             }
             gpu_data::RenderCommand::Finish { .. } => {}
         }
@@ -221,25 +223,46 @@ impl Renderer {
             self.postprocess();
         }
 
-        let timer_query = self.current_timer_query.take().unwrap();
-        self.device.end_timer_query(&timer_query);
-        self.pending_timer_queries.push_back(timer_query);
+        self.end_composite_timer_query();
+        self.pending_timers
+            .push_back(mem::replace(&mut self.current_timers, RenderTimers::new()));
     }
 
     pub fn draw_debug_ui(&self) {
         self.bind_dest_framebuffer();
-        self.debug_ui.draw(&self.device);
+        self.debug_ui_presenter.draw(&self.device);
     }
 
-    pub fn shift_timer_query(&mut self) -> Option<Duration> {
-        let query = self.pending_timer_queries.front()?;
-        if !self.device.timer_query_is_available(&query) {
-            return None;
+    pub fn shift_rendering_time(&mut self) -> Option<RenderTime> {
+        let timers = self.pending_timers.front()?;
+
+        // Accumulate stage-0 time.
+        let mut total_stage_0_time = Duration::new(0, 0);
+        for timer_query in &timers.stage_0 {
+            if !self.device.timer_query_is_available(timer_query) {
+                return None;
+            }
+            total_stage_0_time += self.device.get_timer_query(timer_query);
         }
-        let query = self.pending_timer_queries.pop_front().unwrap();
-        let result = self.device.get_timer_query(&query);
-        self.free_timer_queries.push(query);
-        Some(result)
+
+        // Get stage-1 time.
+        let stage_1_time = {
+            let stage_1_timer_query = timers.stage_1.as_ref().unwrap();
+            if !self.device.timer_query_is_available(&stage_1_timer_query) {
+                return None;
+            }
+            self.device.get_timer_query(stage_1_timer_query)
+        };
+
+        // Recycle all timer queries.
+        let timers = self.pending_timers.pop_front().unwrap();
+        self.free_timer_queries.extend(timers.stage_0.into_iter());
+        self.free_timer_queries.push(timers.stage_1.unwrap());
+
+        Some(RenderTime {
+            stage_0: total_stage_0_time,
+            stage_1: stage_1_time,
+        })
     }
 
     #[inline]
@@ -256,8 +279,10 @@ impl Renderer {
     }
 
     #[inline]
-    pub fn set_main_framebuffer_size(&mut self, new_framebuffer_size: pfgeom::basic::point::Point2DI32) {
-        self.debug_ui.ui.set_framebuffer_size(new_framebuffer_size);
+    pub fn set_main_framebuffer_size(&mut self, new_framebuffer_size: Point2DI32) {
+        self.debug_ui_presenter
+            .ui_presenter
+            .set_framebuffer_size(new_framebuffer_size);
     }
 
     #[inline]
@@ -293,24 +318,6 @@ impl Renderer {
             .upload_to_texture(&self.fill_colors_texture, size, &fill_colors);
     }
 
-    fn upload_solid_tiles(&mut self, solid_tiles: &[gpu_data::SolidTileBatchPrimitive]) {
-        self.device.allocate_buffer(
-            &self.solid_tile_vertex_array().vertex_buffer,
-            BufferData::Memory(&solid_tiles),
-            BufferTarget::Vertex,
-            BufferUploadMode::Dynamic,
-        );
-    }
-
-    fn upload_alpha_tiles(&mut self, alpha_tiles: &[gpu_data::AlphaTileBatchPrimitive]) {
-        self.device.allocate_buffer(
-            &self.alpha_tile_vertex_array().vertex_buffer,
-            BufferData::Memory(&alpha_tiles),
-            BufferTarget::Vertex,
-            BufferUploadMode::Dynamic,
-        );
-    }
-
     fn clear_mask_framebuffer(&mut self) {
         self.device.bind_framebuffer(&self.mask_framebuffer);
 
@@ -326,6 +333,9 @@ impl Renderer {
             return;
         }
 
+        let timer_query = self.allocate_timer_query();
+        self.device.begin_timer_query(&timer_query);
+
         self.stats.fill_count += fills.len();
 
         while !fills.is_empty() {
@@ -336,6 +346,63 @@ impl Renderer {
                 self.draw_buffered_fills();
             }
         }
+
+        self.device.end_timer_query(&timer_query);
+        self.current_timers.stage_0.push(timer_query);
+    }
+
+    fn add_solid_tiles(&mut self, mut solid_tiles: &[SolidTileBatchPrimitive]) {
+        if solid_tiles.is_empty() {
+            return;
+        }
+
+        let timer_query = self.allocate_timer_query();
+        self.device.begin_timer_query(&timer_query);
+
+        self.stats.solid_tile_count += solid_tiles.len();
+
+        while !solid_tiles.is_empty() {
+            let count = cmp::min(
+                solid_tiles.len(),
+                MAX_SOLID_TILES_PER_BATCH - self.buffered_solid_tiles.len(),
+            );
+            self.buffered_solid_tiles
+                .extend_from_slice(&solid_tiles[0..count]);
+            solid_tiles = &solid_tiles[count..];
+            if self.buffered_solid_tiles.len() == MAX_SOLID_TILES_PER_BATCH {
+                self.draw_buffered_solid_tiles();
+            }
+        }
+
+        self.device.end_timer_query(&timer_query);
+        self.current_timers.stage_0.push(timer_query);
+    }
+
+    fn add_alpha_tiles(&mut self, mut alpha_tiles: &[AlphaTileBatchPrimitive]) {
+        if alpha_tiles.is_empty() {
+            return;
+        }
+
+        let timer_query = self.allocate_timer_query();
+        self.device.begin_timer_query(&timer_query);
+
+        self.stats.alpha_tile_count += alpha_tiles.len();
+
+        while !alpha_tiles.is_empty() {
+            let count = cmp::min(
+                alpha_tiles.len(),
+                MAX_ALPHA_TILES_PER_BATCH - self.buffered_alpha_tiles.len(),
+            );
+            self.buffered_alpha_tiles
+                .extend_from_slice(&alpha_tiles[0..count]);
+            alpha_tiles = &alpha_tiles[count..];
+            if self.buffered_alpha_tiles.len() == MAX_ALPHA_TILES_PER_BATCH {
+                self.draw_buffered_alpha_tiles();
+            }
+        }
+
+        self.device.end_timer_query(&timer_query);
+        self.current_timers.stage_0.push(timer_query);
     }
 
     fn draw_buffered_fills(&mut self) {
@@ -390,11 +457,23 @@ impl Renderer {
         self.buffered_fills.clear()
     }
 
-    fn draw_alpha_tiles(&mut self, count: u32) {
-        self.bind_draw_framebuffer();
+    fn draw_buffered_alpha_tiles(&mut self) {
+        if self.buffered_alpha_tiles.is_empty() {
+            return;
+        }
 
         let alpha_tile_vertex_array = self.alpha_tile_vertex_array();
-        let alpha_pipeline = self.alpha_pipeline();
+
+        self.device.allocate_buffer(
+            &alpha_tile_vertex_array.vertex_buffer,
+            BufferData::Memory(&self.buffered_alpha_tiles),
+            BufferTarget::Vertex,
+            BufferUploadMode::Dynamic,
+        );
+
+        let alpha_tile_pipeline = self.alpha_tile_pipeline();
+
+        self.bind_draw_framebuffer();
 
         self.device
             .bind_vertex_array(&alpha_tile_vertex_array.vertex_array);
@@ -461,15 +540,34 @@ impl Renderer {
             stencil: self.stencil_state(),
             ..RenderState::default()
         };
-        self.device
-            .draw_arrays_instanced(Primitive::TriangleFan, 4, count, &render_state);
+        debug_assert!(self.buffered_alpha_tiles.len() <= u32::MAX as usize);
+        self.device.draw_arrays_instanced(
+            Primitive::TriangleFan,
+            4,
+            self.buffered_alpha_tiles.len() as u32,
+            &render_state,
+        );
+
+        self.buffered_alpha_tiles.clear();
     }
 
-    fn draw_solid_tiles(&mut self, count: u32) {
-        self.bind_draw_framebuffer();
+    fn draw_buffered_solid_tiles(&mut self) {
+        if self.buffered_solid_tiles.is_empty() {
+            return;
+        }
 
         let solid_tile_vertex_array = self.solid_tile_vertex_array();
+
+        self.device.allocate_buffer(
+            &solid_tile_vertex_array.vertex_buffer,
+            BufferData::Memory(&self.buffered_solid_tiles),
+            BufferTarget::Vertex,
+            BufferUploadMode::Dynamic,
+        );
+
         let solid_pipeline = self.solid_pipeline();
+
+        self.bind_draw_framebuffer();
 
         self.device
             .bind_vertex_array(&solid_tile_vertex_array.vertex_array);
@@ -523,8 +621,15 @@ impl Renderer {
             stencil: self.stencil_state(),
             ..RenderState::default()
         };
-        self.device
-            .draw_arrays_instanced(Primitive::TriangleFan, 4, count, &render_state);
+        debug_assert!(self.buffered_solid_tiles.len() <= u32::MAX as usize);
+        self.device.draw_arrays_instanced(
+            Primitive::TriangleFan,
+            4,
+            self.buffered_solid_tiles.len() as u32,
+            &render_state,
+        );
+
+        self.buffered_solid_tiles.clear();
     }
 
     fn postprocess(&mut self) {
@@ -786,8 +891,511 @@ impl Renderer {
             }
         }
     }
+
+    fn allocate_timer_query(&mut self) -> D::TimerQuery {
+        match self.free_timer_queries.pop() {
+            Some(query) => query,
+            None => self.device.create_timer_query(),
+        }
+    }
+
+    fn begin_composite_timer_query(&mut self) {
+        let timer_query = self.allocate_timer_query();
+        self.device.begin_timer_query(&timer_query);
+        self.current_timers.stage_1 = Some(timer_query);
+    }
+
+    fn end_composite_timer_query(&mut self) {
+        let query = self
+            .current_timers
+            .stage_1
+            .as_ref()
+            .expect("No stage 1 timer query yet?!");
+        self.device.end_timer_query(&query);
+    }
 }
 
+struct FillVertexArray<D>
+where
+    D: Device,
+{
+    vertex_array: D::VertexArray,
+    vertex_buffer: D::Buffer,
+}
+
+impl<D> FillVertexArray<D>
+where
+    D: Device,
+{
+    fn new(
+        device: &D,
+        fill_program: &FillProgram<D>,
+        quad_vertex_positions_buffer: &D::Buffer,
+    ) -> FillVertexArray<D> {
+        let vertex_array = device.create_vertex_array();
+
+        let vertex_buffer = device.create_buffer();
+        let vertex_buffer_data: BufferData<FillBatchPrimitive> =
+            BufferData::Uninitialized(MAX_FILLS_PER_BATCH);
+        device.allocate_buffer(
+            &vertex_buffer,
+            vertex_buffer_data,
+            BufferTarget::Vertex,
+            BufferUploadMode::Dynamic,
+        );
+
+        let tess_coord_attr = device.get_vertex_attr(&fill_program.program, "TessCoord");
+        let from_px_attr = device.get_vertex_attr(&fill_program.program, "FromPx");
+        let to_px_attr = device.get_vertex_attr(&fill_program.program, "ToPx");
+        let from_subpx_attr = device.get_vertex_attr(&fill_program.program, "FromSubpx");
+        let to_subpx_attr = device.get_vertex_attr(&fill_program.program, "ToSubpx");
+        let tile_index_attr = device.get_vertex_attr(&fill_program.program, "TileIndex");
+
+        device.bind_vertex_array(&vertex_array);
+        device.use_program(&fill_program.program);
+        device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
+        device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
+        device.bind_buffer(&vertex_buffer, BufferTarget::Vertex);
+        device.configure_int_vertex_attr(
+            &from_px_attr,
+            1,
+            VertexAttrType::U8,
+            FILL_INSTANCE_SIZE,
+            0,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &to_px_attr,
+            1,
+            VertexAttrType::U8,
+            FILL_INSTANCE_SIZE,
+            1,
+            1,
+        );
+        device.configure_float_vertex_attr(
+            &from_subpx_attr,
+            2,
+            VertexAttrType::U8,
+            true,
+            FILL_INSTANCE_SIZE,
+            2,
+            1,
+        );
+        device.configure_float_vertex_attr(
+            &to_subpx_attr,
+            2,
+            VertexAttrType::U8,
+            true,
+            FILL_INSTANCE_SIZE,
+            4,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &tile_index_attr,
+            1,
+            VertexAttrType::U16,
+            FILL_INSTANCE_SIZE,
+            6,
+            1,
+        );
+
+        FillVertexArray {
+            vertex_array,
+            vertex_buffer,
+        }
+    }
+}
+
+struct AlphaTileVertexArray<D>
+where
+    D: Device,
+{
+    vertex_array: D::VertexArray,
+    vertex_buffer: D::Buffer,
+}
+
+impl<D> AlphaTileVertexArray<D>
+where
+    D: Device,
+{
+    fn new(
+        device: &D,
+        alpha_tile_program: &AlphaTileProgram<D>,
+        quad_vertex_positions_buffer: &D::Buffer,
+    ) -> AlphaTileVertexArray<D> {
+        let vertex_array = device.create_vertex_array();
+
+        let vertex_buffer = device.create_buffer();
+        let vertex_buffer_data: BufferData<AlphaTileBatchPrimitive> =
+            BufferData::Uninitialized(MAX_ALPHA_TILES_PER_BATCH);
+        device.allocate_buffer(
+            &vertex_buffer,
+            vertex_buffer_data,
+            BufferTarget::Vertex,
+            BufferUploadMode::Dynamic,
+        );
+
+        let tess_coord_attr = device.get_vertex_attr(&alpha_tile_program.program, "TessCoord");
+        let tile_origin_attr = device.get_vertex_attr(&alpha_tile_program.program, "TileOrigin");
+        let backdrop_attr = device.get_vertex_attr(&alpha_tile_program.program, "Backdrop");
+        let object_attr = device.get_vertex_attr(&alpha_tile_program.program, "Object");
+        let tile_index_attr = device.get_vertex_attr(&alpha_tile_program.program, "TileIndex");
+
+        // NB: The object must be of type `I16`, not `U16`, to work around a macOS Radeon
+        // driver bug.
+        device.bind_vertex_array(&vertex_array);
+        device.use_program(&alpha_tile_program.program);
+        device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
+        device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
+        device.bind_buffer(&vertex_buffer, BufferTarget::Vertex);
+        device.configure_int_vertex_attr(
+            &tile_origin_attr,
+            3,
+            VertexAttrType::U8,
+            MASK_TILE_INSTANCE_SIZE,
+            0,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &backdrop_attr,
+            1,
+            VertexAttrType::I8,
+            MASK_TILE_INSTANCE_SIZE,
+            3,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &object_attr,
+            2,
+            VertexAttrType::I16,
+            MASK_TILE_INSTANCE_SIZE,
+            4,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &tile_index_attr,
+            2,
+            VertexAttrType::I16,
+            MASK_TILE_INSTANCE_SIZE,
+            6,
+            1,
+        );
+
+        AlphaTileVertexArray {
+            vertex_array,
+            vertex_buffer,
+        }
+    }
+}
+
+struct SolidTileVertexArray<D>
+where
+    D: Device,
+{
+    vertex_array: D::VertexArray,
+    vertex_buffer: D::Buffer,
+}
+
+impl<D> SolidTileVertexArray<D>
+where
+    D: Device,
+{
+    fn new(
+        device: &D,
+        solid_tile_program: &SolidTileProgram<D>,
+        quad_vertex_positions_buffer: &D::Buffer,
+    ) -> SolidTileVertexArray<D> {
+        let vertex_array = device.create_vertex_array();
+
+        let vertex_buffer = device.create_buffer();
+        let vertex_buffer_data: BufferData<AlphaTileBatchPrimitive> =
+            BufferData::Uninitialized(MAX_SOLID_TILES_PER_BATCH);
+        device.allocate_buffer(
+            &vertex_buffer,
+            vertex_buffer_data,
+            BufferTarget::Vertex,
+            BufferUploadMode::Dynamic,
+        );
+
+        let tess_coord_attr = device.get_vertex_attr(&solid_tile_program.program, "TessCoord");
+        let tile_origin_attr = device.get_vertex_attr(&solid_tile_program.program, "TileOrigin");
+        let object_attr = device.get_vertex_attr(&solid_tile_program.program, "Object");
+
+        // NB: The object must be of type short, not unsigned short, to work around a macOS
+        // Radeon driver bug.
+        device.bind_vertex_array(&vertex_array);
+        device.use_program(&solid_tile_program.program);
+        device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
+        device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
+        device.bind_buffer(&vertex_buffer, BufferTarget::Vertex);
+        device.configure_float_vertex_attr(
+            &tile_origin_attr,
+            2,
+            VertexAttrType::I16,
+            false,
+            SOLID_TILE_INSTANCE_SIZE,
+            0,
+            1,
+        );
+        device.configure_int_vertex_attr(
+            &object_attr,
+            1,
+            VertexAttrType::I16,
+            SOLID_TILE_INSTANCE_SIZE,
+            4,
+            1,
+        );
+
+        SolidTileVertexArray {
+            vertex_array,
+            vertex_buffer,
+        }
+    }
+}
+
+struct FillProgram<D>
+where
+    D: Device,
+{
+    program: D::Program,
+    framebuffer_size_uniform: D::Uniform,
+    tile_size_uniform: D::Uniform,
+    area_lut_uniform: D::Uniform,
+}
+
+impl<D> FillProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> FillProgram<D> {
+        let program = device.create_program(resources, "fill");
+        let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
+        let tile_size_uniform = device.get_uniform(&program, "TileSize");
+        let area_lut_uniform = device.get_uniform(&program, "AreaLUT");
+        FillProgram {
+            program,
+            framebuffer_size_uniform,
+            tile_size_uniform,
+            area_lut_uniform,
+        }
+    }
+}
+
+struct SolidTileProgram<D>
+where
+    D: Device,
+{
+    program: D::Program,
+    framebuffer_size_uniform: D::Uniform,
+    tile_size_uniform: D::Uniform,
+    view_box_origin_uniform: D::Uniform,
+}
+
+impl<D> SolidTileProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, program_name: &str, resources: &dyn ResourceLoader) -> SolidTileProgram<D> {
+        let program = device.create_program_from_shader_names(
+            resources,
+            program_name,
+            program_name,
+            "tile_solid",
+        );
+        let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
+        let tile_size_uniform = device.get_uniform(&program, "TileSize");
+        let view_box_origin_uniform = device.get_uniform(&program, "ViewBoxOrigin");
+        SolidTileProgram {
+            program,
+            framebuffer_size_uniform,
+            tile_size_uniform,
+            view_box_origin_uniform,
+        }
+    }
+}
+
+struct SolidTileMulticolorProgram<D>
+where
+    D: Device,
+{
+    solid_tile_program: SolidTileProgram<D>,
+    fill_colors_texture_uniform: D::Uniform,
+    fill_colors_texture_size_uniform: D::Uniform,
+}
+
+impl<D> SolidTileMulticolorProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> SolidTileMulticolorProgram<D> {
+        let solid_tile_program = SolidTileProgram::new(device, "tile_solid_multicolor", resources);
+        let fill_colors_texture_uniform =
+            device.get_uniform(&solid_tile_program.program, "FillColorsTexture");
+        let fill_colors_texture_size_uniform =
+            device.get_uniform(&solid_tile_program.program, "FillColorsTextureSize");
+        SolidTileMulticolorProgram {
+            solid_tile_program,
+            fill_colors_texture_uniform,
+            fill_colors_texture_size_uniform,
+        }
+    }
+}
+
+struct SolidTileMonochromeProgram<D>
+where
+    D: Device,
+{
+    solid_tile_program: SolidTileProgram<D>,
+    fill_color_uniform: D::Uniform,
+}
+
+impl<D> SolidTileMonochromeProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> SolidTileMonochromeProgram<D> {
+        let solid_tile_program = SolidTileProgram::new(device, "tile_solid_monochrome", resources);
+        let fill_color_uniform = device.get_uniform(&solid_tile_program.program, "FillColor");
+        SolidTileMonochromeProgram {
+            solid_tile_program,
+            fill_color_uniform,
+        }
+    }
+}
+
+struct AlphaTileProgram<D>
+where
+    D: Device,
+{
+    program: D::Program,
+    framebuffer_size_uniform: D::Uniform,
+    tile_size_uniform: D::Uniform,
+    stencil_texture_uniform: D::Uniform,
+    stencil_texture_size_uniform: D::Uniform,
+    view_box_origin_uniform: D::Uniform,
+}
+
+impl<D> AlphaTileProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, program_name: &str, resources: &dyn ResourceLoader) -> AlphaTileProgram<D> {
+        let program = device.create_program_from_shader_names(
+            resources,
+            program_name,
+            program_name,
+            "tile_alpha",
+        );
+        let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
+        let tile_size_uniform = device.get_uniform(&program, "TileSize");
+        let stencil_texture_uniform = device.get_uniform(&program, "StencilTexture");
+        let stencil_texture_size_uniform = device.get_uniform(&program, "StencilTextureSize");
+        let view_box_origin_uniform = device.get_uniform(&program, "ViewBoxOrigin");
+        AlphaTileProgram {
+            program,
+            framebuffer_size_uniform,
+            tile_size_uniform,
+            stencil_texture_uniform,
+            stencil_texture_size_uniform,
+            view_box_origin_uniform,
+        }
+    }
+}
+
+struct AlphaTileMulticolorProgram<D>
+where
+    D: Device,
+{
+    alpha_tile_program: AlphaTileProgram<D>,
+    fill_colors_texture_uniform: D::Uniform,
+    fill_colors_texture_size_uniform: D::Uniform,
+}
+
+impl<D> AlphaTileMulticolorProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> AlphaTileMulticolorProgram<D> {
+        let alpha_tile_program = AlphaTileProgram::new(device, "tile_alpha_multicolor", resources);
+        let fill_colors_texture_uniform =
+            device.get_uniform(&alpha_tile_program.program, "FillColorsTexture");
+        let fill_colors_texture_size_uniform =
+            device.get_uniform(&alpha_tile_program.program, "FillColorsTextureSize");
+        AlphaTileMulticolorProgram {
+            alpha_tile_program,
+            fill_colors_texture_uniform,
+            fill_colors_texture_size_uniform,
+        }
+    }
+}
+
+struct AlphaTileMonochromeProgram<D>
+where
+    D: Device,
+{
+    alpha_tile_program: AlphaTileProgram<D>,
+    fill_color_uniform: D::Uniform,
+}
+
+impl<D> AlphaTileMonochromeProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> AlphaTileMonochromeProgram<D> {
+        let alpha_tile_program = AlphaTileProgram::new(device, "tile_alpha_monochrome", resources);
+        let fill_color_uniform = device.get_uniform(&alpha_tile_program.program, "FillColor");
+        AlphaTileMonochromeProgram {
+            alpha_tile_program,
+            fill_color_uniform,
+        }
+    }
+}
+
+struct PostprocessProgram<D>
+where
+    D: Device,
+{
+    program: D::Program,
+    source_uniform: D::Uniform,
+    source_size_uniform: D::Uniform,
+    framebuffer_size_uniform: D::Uniform,
+    kernel_uniform: D::Uniform,
+    gamma_lut_uniform: D::Uniform,
+    gamma_correction_enabled_uniform: D::Uniform,
+    fg_color_uniform: D::Uniform,
+    bg_color_uniform: D::Uniform,
+}
+
+impl<D> PostprocessProgram<D>
+where
+    D: Device,
+{
+    fn new(device: &D, resources: &dyn ResourceLoader) -> PostprocessProgram<D> {
+        let program = device.create_program(resources, "post");
+        let source_uniform = device.get_uniform(&program, "Source");
+        let source_size_uniform = device.get_uniform(&program, "SourceSize");
+        let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
+        let kernel_uniform = device.get_uniform(&program, "Kernel");
+        let gamma_lut_uniform = device.get_uniform(&program, "GammaLUT");
+        let gamma_correction_enabled_uniform =
+            device.get_uniform(&program, "GammaCorrectionEnabled");
+        let fg_color_uniform = device.get_uniform(&program, "FGColor");
+        let bg_color_uniform = device.get_uniform(&program, "BGColor");
+        PostprocessProgram {
+            program,
+            source_uniform,
+            source_size_uniform,
+            framebuffer_size_uniform,
+            kernel_uniform,
+            gamma_lut_uniform,
+            gamma_correction_enabled_uniform,
+            fg_color_uniform,
+            bg_color_uniform,
+        }
+    }
+}
+
+>>>>>>> master
 struct PostprocessVertexArray<D>
 where
     D: Device,
@@ -945,8 +1553,8 @@ where
     D: Device,
 {
     #[inline]
-    pub fn full_window(window_size: pfgeom::basic::point::Point2DI32) -> DestFramebuffer<D> {
-        let viewport = pfgeom::basic::rect::RectI32::new(pfgeom::basic::point::Point2DI32::default(), window_size);
+    pub fn full_window(window_size: Point2DI32) -> DestFramebuffer<D> {
+        let viewport = RectI32::new(Point2DI32::default(), window_size);
         DestFramebuffer::Default {
             viewport,
             window_size,
@@ -983,7 +1591,7 @@ impl Default for RenderMode {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
-    pub object_count: usize,
+    pub path_count: usize,
     pub fill_count: usize,
     pub alpha_tile_count: usize,
     pub solid_tile_count: usize,
@@ -993,7 +1601,7 @@ impl Add<RenderStats> for RenderStats {
     type Output = RenderStats;
     fn add(self, other: RenderStats) -> RenderStats {
         RenderStats {
-            object_count: self.object_count + other.object_count,
+            path_count: self.path_count + other.path_count,
             solid_tile_count: self.solid_tile_count + other.solid_tile_count,
             alpha_tile_count: self.alpha_tile_count + other.alpha_tile_count,
             fill_count: self.fill_count + other.fill_count,
@@ -1005,10 +1613,58 @@ impl Div<usize> for RenderStats {
     type Output = RenderStats;
     fn div(self, divisor: usize) -> RenderStats {
         RenderStats {
-            object_count: self.object_count / divisor,
+            path_count: self.path_count / divisor,
             solid_tile_count: self.solid_tile_count / divisor,
             alpha_tile_count: self.alpha_tile_count / divisor,
             fill_count: self.fill_count / divisor,
+        }
+    }
+}
+
+struct RenderTimers<D>
+where
+    D: Device,
+{
+    stage_0: Vec<D::TimerQuery>,
+    stage_1: Option<D::TimerQuery>,
+}
+
+impl<D> RenderTimers<D>
+where
+    D: Device,
+{
+    fn new() -> RenderTimers<D> {
+        RenderTimers {
+            stage_0: vec![],
+            stage_1: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RenderTime {
+    pub stage_0: Duration,
+    pub stage_1: Duration,
+}
+
+impl Default for RenderTime {
+    #[inline]
+    fn default() -> RenderTime {
+        RenderTime {
+            stage_0: Duration::new(0, 0),
+            stage_1: Duration::new(0, 0),
+        }
+    }
+}
+
+impl Add<RenderTime> for RenderTime {
+    type Output = RenderTime;
+
+    #[inline]
+    fn add(self, other: RenderTime) -> RenderTime {
+        RenderTime {
+            stage_0: self.stage_0 + other.stage_0,
+            stage_1: self.stage_1 + other.stage_1,
         }
     }
 }
