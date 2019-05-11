@@ -46,7 +46,7 @@ pub struct Renderer {
     // Device
     pub device: pfgpu::PfDevice,
 
-    dest_framebuffer: pfgpu::Framebuffer,
+    dest_framebuffer: pfgpu::pfgpu::Framebuffer,
     fill_pipeline: pfgpu::pipeline::FillPipeline,
     solid_multicolor_pipeline: pfgpu::pipeline::SolidMulticolorPipeline,
     alpha_multicolor_pipeline: pfgpu::pipeline::AlphaMulticolorPipeline,
@@ -56,11 +56,11 @@ pub struct Renderer {
     area_lut_texture: pfgpu::Texture,
     quad_vertex_positions_buffer: pfgpu::Texture,
     fill_vertex_array: pfgpu::Buffer,
-    mask_framebuffer: pfgpu::Framebuffer,
+    mask_framebuffer: pfgpu::pfgpu::Framebuffer,
     fill_colors_texture: pfgpu::Texture,
 
     // Postprocessing shader
-    postprocess_source_framebuffer: pfgpu::Framebuffer,
+    postprocess_source_framebuffer: pfgpu::pfgpu::Framebuffer,
     postprocess_pipeline: pfgpu::pipeline::PostprocessPipeline,
     gamma_lut_texture: pfgpu::Texture,
 
@@ -84,8 +84,8 @@ impl Renderer {
     pub fn new(
         window: &winit::Window,
         instance_name: &str,
-        resources: &dyn pfresources: ResourceLoader,
-        dest_framebuffer: Framebuffer,
+        resources: &dyn pfresources::ResourceLoader,
+        dest_framebuffer: pfgpu::pfgpu::Framebuffer,
     ) -> Renderer {
         let device = Device::new(window, instance_name);
 
@@ -105,10 +105,10 @@ impl Renderer {
         quad_vertex_positions_buffer.upload_data(&QUAD_VERTEX_POSITIONS);
 
         let fill_vertex_buffer = FillVertexBuffer::new(&device, MAX_FILLS_PER_BATCH);
-        let alpha_multicolor_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_MULTICOLOR_TILES_PER_BATCH);
-        let solid_multicolor_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, &solid_multicolor_pipeline);
-        let alpha_monochrome_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, &alpha_monochrome_pipeline);
-        let solid_monochrome_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, &solid_monochrome_pipeline);
+        let alpha_multicolor_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_TILES_PER_BATCH);
+        let solid_multicolor_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
+        let alpha_monochrome_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_TILES_PER_BATCH);
+        let solid_monochrome_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
         let postprocess_vertex_buffer = PostprocessVertexBuffer::new(&device, &postprocess_pipeline);
         let stencil_vertex_buffer = StencilVertexBuffer::new(&device, &stencil_pipeline);
         let reprojection_vertex_array = ReprojectionVertexArray::new(
@@ -1545,7 +1545,7 @@ where
         viewport: pfgeom::basic::rect::RectI32,
         window_size: pfgeom::basic::point::Point2DI32,
     },
-    Other(D::Framebuffer),
+    Other(D::pfgpu::Framebuffer),
 }
 
 impl<D> DestFramebuffer<D>
