@@ -13,8 +13,8 @@
 precision highp float;
 
 layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
-    uniform vec2 uFramebufferSize;
-    uniform vec2 uTileSize;
+    vec2 uFramebufferSize;
+    vec2 uTileSize;
 } uniforms;
 
 layout(location = 0) in vec2 aTessCoord;

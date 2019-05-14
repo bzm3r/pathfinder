@@ -12,9 +12,9 @@
 
 precision highp float;
 
-in vec2 aPosition;
+layout(location = 0) in vec2 aPosition;
 
-out vec2 vTexCoord;
+layout(location = 0) out vec2 vTexCoord;
 
 void main() {
     vTexCoord = aPosition;

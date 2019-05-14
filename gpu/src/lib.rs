@@ -42,8 +42,9 @@ pub struct PfDevice {
     device: <Backend as hal::Backend>::Device,
     adapter: hal::Adapter<Backend>,
     queue_group: hal::queue::QueueGroup<Backend, hal::Graphics>,
+    swapchain_framebuffers: <Backend as hal::Backend>::Framebuffer,
     swapchain: <Backend as hal::Backend>::Swapchain,
-    extent: hal::window::Extent2D,
+    pub extent: hal::window::Extent2D,
     backbuffer: hal::window::Backbuffer<Backend>,
     format: hal::format::Format,
     frames_in_flight: usize,
@@ -73,12 +74,23 @@ impl PfDevice {
         let swapchain_image_views: Vec<_> =
             PfDevice::create_image_views(device, backbuffer, swapchain_framebuffer_format);
 
-        let swapchain_framebuffer = PfDevice::create_framebuffer(
-            &device,
-            &render_pass,
-            &swapchain_image_views,
-            extent,
-        );
+        let mut swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer> = Vec::new();
+
+        for image_view in swapchain_image_views.iter() {
+            swapchain_framebuffer.push(
+                device
+                    .create_framebuffer(
+                        render_pass,
+                        vec![image_view],
+                        hal::image::Extent {
+                            width: extent.width as _,
+                            height: extent.height as _,
+                            depth: 1,
+                        },
+                    )
+                    .expect("Could not create framebuffer."),
+            );
+        }
 
         let mut command_pool = device
             .create_command_pool_typed(
@@ -91,6 +103,24 @@ impl PfDevice {
             .iter()
             .map(|_| command_pool.acquire_command_buffer())
             .collect();
+
+        HalDevice {
+            instance,
+            surface,
+            device,
+            adapter,
+            queue_group,
+            swapchain_framebuffers,
+            swapchain,
+            extent,
+            backbuffer,
+            format,
+            frames_in_flight,
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+            swapchain_image_views,
+        }
     }
 
     fn pick_adapter(
@@ -298,30 +328,26 @@ impl PfDevice {
         }
     }
 
-    pub fn create_framebuffer(
-        device: &<Backend as hal::Backend>::Device,
+    pub unsafe fn create_framebuffer(&self,
         render_pass: &<Backend as hal::Backend>::RenderPass,
         image_views: &[<Backend as hal::Backend>::ImageView],
-        extent: hal::window::Extent2D,
     ) -> Vec<<Backend as hal::Backend>::Framebuffer> {
         let mut framebuffer: Vec<<Backend as hal::Backend>::Framebuffer> = Vec::new();
 
-        unsafe {
-            for image_view in image_views.iter() {
-                swapchain_framebuffer.push(
-                    device
-                        .create_framebuffer(
-                            render_pass,
-                            vec![image_view],
-                            hal::image::Extent {
-                                width: extent.width as _,
-                                height: extent.height as _,
-                                depth: 1,
-                            },
-                        )
-                        .expect("failed to create framebuffer!"),
-                );
-            }
+        for image_view in image_views.iter() {
+            swapchain_framebuffer.push(
+                self.device
+                    .create_framebuffer(
+                        render_pass,
+                        vec![image_view],
+                        hal::image::Extent {
+                            width: self.extent.width as _,
+                            height: self.extent.height as _,
+                            depth: 1,
+                        },
+                    )
+                    .expect("Could not create framebuffer."),
+            );
         }
 
         framebuffer
@@ -404,6 +430,12 @@ impl PfDevice {
         let size = Point2DI32::new(image.width() as i32, image.height() as i32);
 
         Texture::new_from_data(&self.adapter, &self.device, size, &data)
+    }
+
+    pub unsafe fn create_texture(&self,
+                                 format: TextureFormat,
+                                 size: Point2DI32) -> Texture {
+        Texture::new(&self.device, format, size)
     }
 }
 

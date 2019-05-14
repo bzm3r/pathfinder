@@ -12,7 +12,7 @@ vulkan = ["gfx-backend-vulkan"]
 
 [dependencies]
 rustache = "0.1"
-gfx-hal = { version = "0.1", git = "https://github.com/gfx-rs/gfx", branch = "master" }
+gfx-hal = { version = "0.2", git = "https://github.com/gfx-rs/gfx", branch = "master" }
 env_logger = "0.5.12"
 shaderc = "0.3.16"
 winit = "0.19.1"
@@ -30,19 +30,19 @@ path = "../geometry"
 path = "../simd"
 
 [dependencies.gfx-backend-vulkan]
-version = "0.1"
+version = "0.2"
 git = "https://github.com/gfx-rs/gfx"
 branch = "master"
 optional = true
 
 [target.'cfg(target_os = "macos")'.dependencies.gfx-backend-metal]
-version = "0.1"
+version = "0.2"
 git = "https://github.com/gfx-rs/gfx"
 branch = "master"
 optional = true
 
 [target.'cfg(windows)'.dependencies.gfx-backend-dx12]
-version = "0.1"
+version = "0.2"
 git = "https://github.com/gfx-rs/gfx"
 branch = "master"
 optional = true

@@ -12,7 +12,7 @@
 
 precision highp float;
 
-out vec4 oFragColor;
+layout(location = 0) out vec4 oFragColor;
 
 void main() {
     // This should be color masked out.

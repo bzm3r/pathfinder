@@ -12,13 +12,13 @@
 
 precision highp float;
 
-uniform sampler2D uStencilTexture;
+layout(set = 1, binding = 0) uniform sampler2D uStencilTexture;
 
-in vec2 vTexCoord;
-in float vBackdrop;
-in vec4 vColor;
+layout(location = 0) in vec2 vTexCoord;
+layout(location = 1) in float vBackdrop;
+layout(location = 2) in vec4 vColor;
 
-out vec4 oFragColor;
+layout(location = 0) out vec4 oFragColor;
 
 void main() {
     float coverage = abs(texture(uStencilTexture, vTexCoord).r + vBackdrop);

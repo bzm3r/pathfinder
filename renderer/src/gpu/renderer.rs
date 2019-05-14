@@ -23,6 +23,7 @@ use std::mem;
 use std::ops::{Add, Div};
 use std::time::Duration;
 use std::u32;
+use crate::gpu_data::{FillBatchPrimitive, AlphaTileBatchPrimitive, SolidTileBatchPrimitive, RenderCommand};
 
 static QUAD_VERTEX_POSITIONS: [u8; 8] = [0, 0, 1, 0, 1, 1, 0, 1];
 
@@ -38,37 +39,44 @@ const MASK_TILE_INSTANCE_SIZE: usize = 8;
 const FILL_COLORS_TEXTURE_WIDTH: i32 = 256;
 const FILL_COLORS_TEXTURE_HEIGHT: i32 = 256;
 
-const MAX_FILLS_PER_BATCH: usize = 0x4000;
-const MAX_ALPHA_TILES_PER_BATCH: usize = 0x4000;
-const MAX_SOLID_TILES_PER_BATCH: usize = 0x4000;
+const MAX_FILLS_PER_BATCH: u64 = 0x4000;
+const MAX_ALPHA_TILES_PER_BATCH: u64 = 0x4000;
+const MAX_SOLID_TILES_PER_BATCH: u64 = 0x4000;
+const MAX_POSTPROCESS_VERTICES: usize = 1; // what should this be?
+const MAX_REPROJECTION_VERTICES: usize = 1; // what should this be?
 
 pub struct Renderer {
-    // Device
     pub device: pfgpu::PfDevice,
 
-    dest_framebuffer: pfgpu::pfgpu::Framebuffer,
     fill_pipeline: pfgpu::pipeline::FillPipeline,
     solid_multicolor_pipeline: pfgpu::pipeline::SolidMulticolorPipeline,
     alpha_multicolor_pipeline: pfgpu::pipeline::AlphaMulticolorPipeline,
     solid_monochrome_pipeline: pfgpu::pipeline::SolidMonochromePipeline,
     alpha_monochrome_pipeline: pfgpu::pipeline::AlphaMonochromePipeline,
+    solid_monochrome_tile_vertex_buffer: SolidTileVertexBuffer,
+    alpha_monochrome_tile_vertex_buffer: AlphaTileVertexBuffer,
+    solid_multicolor_tile_vertex_buffer: SolidTileVertexBuffer,
+    alpha_multicolor_tile_vertex_buffer: AlphaTileVertexBuffer,
 
     area_lut_texture: pfgpu::Texture,
-    quad_vertex_positions_buffer: pfgpu::Texture,
-    fill_vertex_array: pfgpu::Buffer,
-    mask_framebuffer: pfgpu::pfgpu::Framebuffer,
+    quad_vertex_positions_buffer: pfgpu::Buffer,
+    fill_vertex_buffer: FillVertexBuffer,
+    mask_framebuffer: pfgpu::Framebuffer,
     fill_colors_texture: pfgpu::Texture,
 
     // Postprocessing shader
-    postprocess_source_framebuffer: pfgpu::pfgpu::Framebuffer,
+    postprocess_source_framebuffer: pfgpu::Framebuffer,
     postprocess_pipeline: pfgpu::pipeline::PostprocessPipeline,
+    postprocess_vertex_buffer: PostprocessVertexBuffer,
     gamma_lut_texture: pfgpu::Texture,
 
     // Stencil shader
     stencil_pipeline: pfgpu::pipeline::StencilPipeline,
+    stencil_vertex_buffer: StencilVertexBuffer,
 
     // Reprojection shader
-    reprojection_pipeline: pfgpu::pipeline::ReprojectionPipeline,
+    //reprojection_pipeline: pfgpu::pipeline::ReprojectionPipeline,
+    //reprojection_vertex_buffer: ReprojectionVertexBuffer,
 
     // Rendering state
     mask_framebuffer_cleared: bool,
@@ -81,11 +89,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(
+    pub unsafe fn new(
         window: &winit::Window,
         instance_name: &str,
         resources: &dyn pfresources::ResourceLoader,
-        dest_framebuffer: pfgpu::pfgpu::Framebuffer,
     ) -> Renderer {
         let device = Device::new(window, instance_name);
 
@@ -96,7 +103,7 @@ impl Renderer {
         let alpha_monochrome_pipeline = AlphaTileMonochromePipeline::new(&device, resources);
         let postprocess_pipeline = PostprocessPipeline::new(&device, resources);
         let stencil_pipeline = StencilProgram::new(&device, resources);
-        let reprojection_pipeline = ReprojectionProgram::new(&device, resources);
+        //let reprojection_pipeline = ReprojectionProgram::new(&device, resources);
 
         let area_lut_texture = device.create_texture_from_png(resources, "area-lut");
         let gamma_lut_texture = device.create_texture_from_png(resources, "gamma-lut");
@@ -109,82 +116,60 @@ impl Renderer {
         let solid_multicolor_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
         let alpha_monochrome_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_TILES_PER_BATCH);
         let solid_monochrome_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
-        let postprocess_vertex_buffer = PostprocessVertexBuffer::new(&device, &postprocess_pipeline);
-        let stencil_vertex_buffer = StencilVertexBuffer::new(&device, &stencil_pipeline);
-        let reprojection_vertex_array = ReprojectionVertexArray::new(
-            &device,
-            &reprojection_pipeline,
-            &quad_vertex_positions_buffer,
-        );
+        let postprocess_vertex_buffer = PostprocessVertexBuffer::new(&device, MAX_POSTPROCESS_VERTICES);
+        let stencil_vertex_buffer = StencilVertexBuffer::new(&device, QUAD_VERTEX_POSITIONS.len() as u64);
+        //let reprojection_vertex_buffer = ReprojectionVertexBuffer::new(&device, MAX_REPROJECTION_VERTICES);
 
         let mask_framebuffer_size =
             pfgeom::basic::point::Point2DI32::new(MASK_FRAMEBUFFER_WIDTH, MASK_FRAMEBUFFER_HEIGHT);
-        let mask_framebuffer_texture =
-            device.create_texture(TextureFormat::R16F, mask_framebuffer_size);
-        let mask_framebuffer = device.create_framebuffer(mask_framebuffer_texture);
+        let mask_framebuffer_texture = device.create_texture(hal::format::Format::R16Sfloat, mask_framebuffer_size);
+        let mask_framebuffer = device.create_framebuffer(mask_framebuffer_texture, &fill_pipeline.render_pass);
 
         let fill_colors_size =
             pfgeom::basic::point::Point2DI32::new(FILL_COLORS_TEXTURE_WIDTH, FILL_COLORS_TEXTURE_HEIGHT);
-        let fill_colors_texture = device.create_texture(TextureFormat::RGBA8, fill_colors_size);
+        let fill_colors_texture = device.create_texture(hal::format::Format::Rgba8Srgb, fill_colors_size);
 
-        let window_size = dest_framebuffer.window_size(&device);
-        let debug_ui_presenter = DebugUIPresenter::new(&device, resources, window_size);
-
-        let renderer = Renderer {
+        Renderer {
             device,
-            dest_framebuffer,
             fill_pipeline,
             solid_monochrome_pipeline,
             alpha_monochrome_pipeline,
             solid_multicolor_pipeline,
             alpha_multicolor_pipeline,
-            solid_monochrome_tile_vertex_array,
-            alpha_monochrome_tile_vertex_array,
-            solid_multicolor_tile_vertex_array,
-            alpha_multicolor_tile_vertex_array,
+            solid_monochrome_tile_vertex_buffer,
+            alpha_monochrome_tile_vertex_buffer,
+            solid_multicolor_tile_vertex_buffer,
+            alpha_multicolor_tile_vertex_buffer,
             area_lut_texture,
             quad_vertex_positions_buffer,
-            fill_vertex_array,
+            fill_vertex_buffer,
             mask_framebuffer,
             fill_colors_texture,
 
             postprocess_source_framebuffer: None,
             postprocess_pipeline,
-            postprocess_vertex_array,
+            postprocess_vertex_buffer,
             gamma_lut_texture,
 
             stencil_pipeline,
-            stencil_vertex_array,
+            stencil_vertex_buffer,
 
-            reprojection_pipeline,
-            reprojection_vertex_array,
-
-            stats: RenderStats::default(),
-            current_timers: RenderTimers::new(),
-            pending_timers: VecDeque::new(),
-            free_timer_queries: vec![],
-            debug_ui_presenter,
+            //reprojection_pipeline,
+            //reprojection_vertex_buffer,
 
             mask_framebuffer_cleared: false,
             buffered_fills: vec![],
             buffered_alpha_tiles: vec![],
             buffered_solid_tiles: vec![],
 
-            render_mode: RenderMode::default(),
             use_depth: false,
-        };
-
-        // As a convenience, bind the destination framebuffer.
-        renderer.bind_dest_framebuffer();
-
-        renderer
+        }
     }
 
     pub fn begin_scene(&mut self) {
         self.init_postprocessing_framebuffer();
 
         self.mask_framebuffer_cleared = false;
-        self.stats = RenderStats::default();
     }
 
     pub fn render_command(&mut self, command: &gpu_data::RenderCommand) {
@@ -266,20 +251,20 @@ impl Renderer {
     }
 
     #[inline]
-    pub fn dest_framebuffer(&self) -> &DestFramebuffer<D> {
+    pub fn dest_framebuffer(&self) -> &DestFramebuffer {
         &self.dest_framebuffer
     }
 
     #[inline]
     pub fn replace_dest_framebuffer(
         &mut self,
-        new_dest_framebuffer: DestFramebuffer<D>,
-    ) -> DestFramebuffer<D> {
+        new_dest_framebuffer: DestFramebuffer,
+    ) -> DestFramebuffer {
         mem::replace(&mut self.dest_framebuffer, new_dest_framebuffer)
     }
 
     #[inline]
-    pub fn set_main_framebuffer_size(&mut self, new_framebuffer_size: Point2DI32) {
+    pub fn set_main_framebuffer_size(&mut self, new_framebuffer_size: pfgeom::basic::point::Point2DI32) {
         self.debug_ui_presenter
             .ui_presenter
             .set_framebuffer_size(new_framebuffer_size);
@@ -301,7 +286,7 @@ impl Renderer {
     }
 
     #[inline]
-    pub fn quad_vertex_positions_buffer(&self) -> &D::Buffer {
+    pub fn quad_vertex_positions_buffer(&self) -> &pfgpu::Buffer {
         &self.quad_vertex_positions_buffer
     }
 
@@ -339,7 +324,7 @@ impl Renderer {
         self.stats.fill_count += fills.len();
 
         while !fills.is_empty() {
-            let count = cmp::min(fills.len(), MAX_FILLS_PER_BATCH - self.buffered_fills.len());
+            let count = cmp::min(fills.len(), (MAX_FILLS_PER_BATCH - self.buffered_fills.len()) as usize);
             self.buffered_fills.extend_from_slice(&fills[0..count]);
             fills = &fills[count..];
             if self.buffered_fills.len() == MAX_FILLS_PER_BATCH {
@@ -364,7 +349,7 @@ impl Renderer {
         while !solid_tiles.is_empty() {
             let count = cmp::min(
                 solid_tiles.len(),
-                MAX_SOLID_TILES_PER_BATCH - self.buffered_solid_tiles.len(),
+                (MAX_SOLID_TILES_PER_BATCH - self.buffered_solid_tiles.len()) as usize,
             );
             self.buffered_solid_tiles
                 .extend_from_slice(&solid_tiles[0..count]);
@@ -391,7 +376,7 @@ impl Renderer {
         while !alpha_tiles.is_empty() {
             let count = cmp::min(
                 alpha_tiles.len(),
-                MAX_ALPHA_TILES_PER_BATCH - self.buffered_alpha_tiles.len(),
+                (MAX_ALPHA_TILES_PER_BATCH - self.buffered_alpha_tiles.len()) as usize,
             );
             self.buffered_alpha_tiles
                 .extend_from_slice(&alpha_tiles[0..count]);
@@ -411,7 +396,7 @@ impl Renderer {
         }
 
         self.device.allocate_buffer(
-            &self.fill_vertex_array.vertex_buffer,
+            &self.fill_vertex_buffer.vertex_buffer,
             BufferData::Memory(&self.buffered_fills),
             BufferTarget::Vertex,
             BufferUploadMode::Dynamic,
@@ -425,7 +410,7 @@ impl Renderer {
         self.device.bind_framebuffer(&self.mask_framebuffer);
 
         self.device
-            .bind_vertex_array(&self.fill_vertex_array.vertex_array);
+            .bind_vertex_buffer(&self.fill_vertex_buffer.vertex_array);
         self.device.use_pipeline(&self.fill_pipeline.program);
         self.device.set_uniform(
             &self.fill_pipeline.framebuffer_size_uniform,
@@ -442,10 +427,7 @@ impl Renderer {
             &self.fill_pipeline.area_lut_uniform,
             UniformData::TextureUnit(0),
         );
-        let render_state = RenderState {
-            blend: BlendState::RGBOneAlphaOne,
-            ..RenderState::default()
-        };
+
         debug_assert!(self.buffered_fills.len() <= u32::MAX as usize);
         self.device.draw_arrays_instanced(
             Primitive::TriangleFan,
@@ -462,10 +444,10 @@ impl Renderer {
             return;
         }
 
-        let alpha_tile_vertex_array = self.alpha_tile_vertex_array();
+        let alpha_tile_vertex_buffer = self.alpha_tile_vertex_buffer();
 
         self.device.allocate_buffer(
-            &alpha_tile_vertex_array.vertex_buffer,
+            &alpha_tile_vertex_buffer.vertex_buffer,
             BufferData::Memory(&self.buffered_alpha_tiles),
             BufferTarget::Vertex,
             BufferUploadMode::Dynamic,
@@ -476,7 +458,7 @@ impl Renderer {
         self.bind_draw_framebuffer();
 
         self.device
-            .bind_vertex_array(&alpha_tile_vertex_array.vertex_array);
+            .bind_vertex_buffer(&alpha_tile_vertex_buffer.vertex_array);
         self.device.use_pipeline(&alpha_pipeline.program);
         self.device.set_uniform(
             &alpha_pipeline.framebuffer_size_uniform,
@@ -556,10 +538,10 @@ impl Renderer {
             return;
         }
 
-        let solid_tile_vertex_array = self.solid_tile_vertex_array();
+        let solid_tile_vertex_buffer = self.solid_tile_vertex_buffer();
 
         self.device.allocate_buffer(
-            &solid_tile_vertex_array.vertex_buffer,
+            &solid_tile_vertex_buffer.vertex_buffer,
             BufferData::Memory(&self.buffered_solid_tiles),
             BufferTarget::Vertex,
             BufferUploadMode::Dynamic,
@@ -570,7 +552,7 @@ impl Renderer {
         self.bind_draw_framebuffer();
 
         self.device
-            .bind_vertex_array(&solid_tile_vertex_array.vertex_array);
+            .bind_vertex_buffer(&solid_tile_vertex_buffer.vertex_array);
         self.device.use_pipeline(&solid_pipeline.program);
         self.device.set_uniform(
             &solid_pipeline.framebuffer_size_uniform,
@@ -652,7 +634,7 @@ impl Renderer {
         self.bind_dest_framebuffer();
 
         self.device
-            .bind_vertex_array(&self.postprocess_vertex_array.vertex_array);
+            .bind_vertex_buffer(&self.postprocess_vertex_buffer.vertex_array);
         self.device.use_pipeline(&self.postprocess_pipeline.program);
         self.device.set_uniform(
             &self.postprocess_pipeline.framebuffer_size_uniform,
@@ -708,37 +690,37 @@ impl Renderer {
             .draw_arrays(Primitive::TriangleFan, 4, &RenderState::default());
     }
 
-    fn solid_pipeline(&self) -> &SolidTileProgram<D> {
+    fn solid_pipeline(&self) -> &SolidTileProgram {
         match self.render_mode {
             RenderMode::Monochrome { .. } => &self.solid_monochrome_pipeline.solid_pipeline,
             RenderMode::Multicolor => &self.solid_multicolor_pipeline.solid_pipeline,
         }
     }
 
-    fn alpha_pipeline(&self) -> &AlphaTileProgram<D> {
+    fn alpha_pipeline(&self) -> &AlphaTileProgram {
         match self.render_mode {
             RenderMode::Monochrome { .. } => &self.alpha_monochrome_pipeline.alpha_pipeline,
             RenderMode::Multicolor => &self.alpha_multicolor_pipeline.alpha_pipeline,
         }
     }
 
-    fn solid_tile_vertex_array(&self) -> &SolidTileVertexArray<D> {
+    fn solid_tile_vertex_buffer(&self) -> &SolidTileVertexArray {
         match self.render_mode {
-            RenderMode::Monochrome { .. } => &self.solid_monochrome_tile_vertex_array,
-            RenderMode::Multicolor => &self.solid_multicolor_tile_vertex_array,
+            RenderMode::Monochrome { .. } => &self.solid_monochrome_tile_vertex_buffer,
+            RenderMode::Multicolor => &self.solid_multicolor_tile_vertex_buffer,
         }
     }
 
-    fn alpha_tile_vertex_array(&self) -> &AlphaTileVertexArray<D> {
+    fn alpha_tile_vertex_buffer(&self) -> &AlphaTileVertexArray {
         match self.render_mode {
-            RenderMode::Monochrome { .. } => &self.alpha_monochrome_tile_vertex_array,
-            RenderMode::Multicolor => &self.alpha_multicolor_tile_vertex_array,
+            RenderMode::Monochrome { .. } => &self.alpha_monochrome_tile_vertex_buffer,
+            RenderMode::Multicolor => &self.alpha_multicolor_tile_vertex_buffer,
         }
     }
 
     fn draw_stencil(&self, quad_positions: &[pfgeom::basic::point::Point3DF32]) {
         self.device.allocate_buffer(
-            &self.stencil_vertex_array.vertex_buffer,
+            &self.stencil_vertex_buffer.vertex_buffer,
             BufferData::Memory(quad_positions),
             BufferTarget::Vertex,
             BufferUploadMode::Dynamic,
@@ -746,7 +728,7 @@ impl Renderer {
         self.bind_draw_framebuffer();
 
         self.device
-            .bind_vertex_array(&self.stencil_vertex_array.vertex_array);
+            .bind_vertex_buffer(&self.stencil_vertex_buffer.vertex_array);
         self.device.use_pipeline(&self.stencil_pipeline.program);
         self.device.draw_arrays(
             Primitive::TriangleFan,
@@ -778,7 +760,7 @@ impl Renderer {
         self.bind_draw_framebuffer();
 
         self.device
-            .bind_vertex_array(&self.reprojection_vertex_array.vertex_array);
+            .bind_vertex_buffer(&self.reprojection_vertex_buffer.vertex_array);
         self.device
             .use_pipeline(&self.reprojection_pipeline.program);
         self.device.set_uniform(
@@ -881,15 +863,9 @@ impl Renderer {
     }
 
     fn main_viewport(&self) -> pfgeom::basic::rect::RectI32 {
-        match self.dest_framebuffer {
-            DestFramebuffer::Default { viewport, .. } => viewport,
-            DestFramebuffer::Other(ref framebuffer) => {
-                let size = self
-                    .device
-                    .texture_size(self.device.framebuffer_texture(framebuffer));
-                pfgeom::basic::rect::RectI32::new(pfgeom::basic::point::Point2DI32::default(), size)
-            }
-        }
+        let size = pfgeom::basic::point::Point2DI32::new(self.device.extent.width as i32, self.device.extent.height as i32)
+        let origin = pfgeom::basic::point::Point2DI32::new(0, 0);
+        pfgeom::basic::rect::RectI32::new(origin, size);
     }
 
     fn allocate_timer_query(&mut self) -> D::TimerQuery {
@@ -915,115 +891,60 @@ impl Renderer {
     }
 }
 
-struct FillVertexArray<D>
-where
-    D: Device,
+struct FillVertexBuffer(pfgpu::Buffer);
+
+impl FillVertexBuffer
 {
-    vertex_array: D::VertexArray,
-    vertex_buffer: D::Buffer,
-}
-
-impl<D> FillVertexArray<D>
-where
-    D: Device,
-{
-    fn new(
-        device: &D,
-        fill_program: &FillProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-    ) -> FillVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
-
-        let vertex_buffer = device.create_buffer();
-        let vertex_buffer_data: BufferData<FillBatchPrimitive> =
-            BufferData::Uninitialized(MAX_FILLS_PER_BATCH);
-        device.allocate_buffer(
-            &vertex_buffer,
-            vertex_buffer_data,
-            BufferTarget::Vertex,
-            BufferUploadMode::Dynamic,
-        );
-
-        let tess_coord_attr = device.get_vertex_attr(&fill_program.program, "TessCoord");
-        let from_px_attr = device.get_vertex_attr(&fill_program.program, "FromPx");
-        let to_px_attr = device.get_vertex_attr(&fill_program.program, "ToPx");
-        let from_subpx_attr = device.get_vertex_attr(&fill_program.program, "FromSubpx");
-        let to_subpx_attr = device.get_vertex_attr(&fill_program.program, "ToSubpx");
-        let tile_index_attr = device.get_vertex_attr(&fill_program.program, "TileIndex");
-
-        device.bind_vertex_array(&vertex_array);
-        device.use_program(&fill_program.program);
-        device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
-        device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
-        device.bind_buffer(&vertex_buffer, BufferTarget::Vertex);
-        device.configure_int_vertex_attr(
-            &from_px_attr,
-            1,
-            VertexAttrType::U8,
-            FILL_INSTANCE_SIZE,
-            0,
-            1,
-        );
-        device.configure_int_vertex_attr(
-            &to_px_attr,
-            1,
-            VertexAttrType::U8,
-            FILL_INSTANCE_SIZE,
-            1,
-            1,
-        );
-        device.configure_float_vertex_attr(
-            &from_subpx_attr,
-            2,
-            VertexAttrType::U8,
-            true,
-            FILL_INSTANCE_SIZE,
-            2,
-            1,
-        );
-        device.configure_float_vertex_attr(
-            &to_subpx_attr,
-            2,
-            VertexAttrType::U8,
-            true,
-            FILL_INSTANCE_SIZE,
-            4,
-            1,
-        );
-        device.configure_int_vertex_attr(
-            &tile_index_attr,
-            1,
-            VertexAttrType::U16,
-            FILL_INSTANCE_SIZE,
-            6,
-            1,
-        );
-
-        FillVertexArray {
-            vertex_array,
-            vertex_buffer,
-        }
+    unsafe fn new(device: &pfgpu::PfDevice, size: u64) -> FillVertexBuffer {
+        let buffer = device.create_vertex_buffer(size*std::mem::size_of::<gpu_data::FillBatchPrimitive>());
+        FillVertexBuffer(buffer);
     }
 }
 
-struct AlphaTileVertexArray<D>
-where
-    D: Device,
+struct AlphaTileVertexBuffer(pfgpu::Buffer);
+
+impl AlphaTileVertexBuffer
 {
-    vertex_array: D::VertexArray,
-    vertex_buffer: D::Buffer,
+    unsafe fn new(device: &pfgpu::PfDevice, size: u64) -> AlphaTileVertexBuffer {
+        let buffer = device.create_vertex_buffer(size*std::mem::size_of::<gpu_data::AlphaTileBatchPrimitive>());
+        AlphaTileVertexBuffer(buffer);
+    }
 }
 
-impl<D> AlphaTileVertexArray<D>
-where
-    D: Device,
+struct SolidTileVertexBuffer(pfgpu::Buffer);
+
+impl SolidTileVertexBuffer
+{
+    unsafe fn new(device: &pfgpu::PfDevice, size: u64) -> SolidTileVertexBuffer {
+        let buffer = device.create_vertex_buffer(size*std::mem::size_of::<gpu_data::SolidTileBatchPrimitive>());
+        SolidTileVertexBuffer(buffer);
+    }
+}
+
+struct StencilVertexBuffer(pfgpu::Buffer);
+
+impl StencilVertexBuffer
+{
+    unsafe fn new(device: &pfgpu::PfDevice, size: u64) -> StencilVertexBuffer {
+        let buffer = device.create_vertex_buffer(size*std::mem::size_of::<u8>());
+        StencilVertexBuffer(buffer);
+    }
+}
+
+struct AlphaTileVertexArray
+{
+    vertex_array: D::VertexArray,
+    vertex_buffer: pfgpu::Buffer,
+}
+
+impl AlphaTileVertexArray
 {
     fn new(
-        device: &D,
-        alpha_tile_program: &AlphaTileProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-    ) -> AlphaTileVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
+        device: &pfgpu::PfDevice,
+        alpha_tile_program: &AlphaTileProgram,
+        quad_vertex_positions_buffer: &pfgpu::Buffer,
+    ) -> AlphaTileVertexArray {
+        let vertex_array = device.create_vertex_buffer();
 
         let vertex_buffer = device.create_buffer();
         let vertex_buffer_data: BufferData<AlphaTileBatchPrimitive> =
@@ -1043,7 +964,7 @@ where
 
         // NB: The object must be of type `I16`, not `U16`, to work around a macOS Radeon
         // driver bug.
-        device.bind_vertex_array(&vertex_array);
+        device.bind_vertex_buffer(&vertex_array);
         device.use_program(&alpha_tile_program.program);
         device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
         device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
@@ -1088,24 +1009,20 @@ where
     }
 }
 
-struct SolidTileVertexArray<D>
-where
-    D: Device,
+struct SolidTileVertexArray
 {
     vertex_array: D::VertexArray,
-    vertex_buffer: D::Buffer,
+    vertex_buffer: pfgpu::Buffer,
 }
 
-impl<D> SolidTileVertexArray<D>
-where
-    D: Device,
+impl SolidTileVertexArray
 {
     fn new(
-        device: &D,
-        solid_tile_program: &SolidTileProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-    ) -> SolidTileVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
+        device: &pfgpu::PfDevice,
+        solid_tile_program: &SolidTileProgram,
+        quad_vertex_positions_buffer: &pfgpu::Buffer,
+    ) -> SolidTileVertexArray {
+        let vertex_array = device.create_vertex_buffer();
 
         let vertex_buffer = device.create_buffer();
         let vertex_buffer_data: BufferData<AlphaTileBatchPrimitive> =
@@ -1123,7 +1040,7 @@ where
 
         // NB: The object must be of type short, not unsigned short, to work around a macOS
         // Radeon driver bug.
-        device.bind_vertex_array(&vertex_array);
+        device.bind_vertex_buffer(&vertex_array);
         device.use_program(&solid_tile_program.program);
         device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
         device.configure_float_vertex_attr(&tess_coord_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
@@ -1153,9 +1070,7 @@ where
     }
 }
 
-struct FillProgram<D>
-where
-    D: Device,
+struct FillProgram
 {
     program: D::Program,
     framebuffer_size_uniform: D::Uniform,
@@ -1163,11 +1078,9 @@ where
     area_lut_uniform: D::Uniform,
 }
 
-impl<D> FillProgram<D>
-where
-    D: Device,
+impl FillProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> FillProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> FillProgram {
         let program = device.create_program(resources, "fill");
         let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
         let tile_size_uniform = device.get_uniform(&program, "TileSize");
@@ -1181,9 +1094,7 @@ where
     }
 }
 
-struct SolidTileProgram<D>
-where
-    D: Device,
+struct SolidTileProgram
 {
     program: D::Program,
     framebuffer_size_uniform: D::Uniform,
@@ -1191,11 +1102,9 @@ where
     view_box_origin_uniform: D::Uniform,
 }
 
-impl<D> SolidTileProgram<D>
-where
-    D: Device,
+impl SolidTileProgram
 {
-    fn new(device: &D, program_name: &str, resources: &dyn ResourceLoader) -> SolidTileProgram<D> {
+    fn new(device: &pfgpu::PfDevice, program_name: &str, resources: &dyn ResourceLoader) -> SolidTileProgram {
         let program = device.create_program_from_shader_names(
             resources,
             program_name,
@@ -1214,20 +1123,16 @@ where
     }
 }
 
-struct SolidTileMulticolorProgram<D>
-where
-    D: Device,
+struct SolidTileMulticolorProgram
 {
-    solid_tile_program: SolidTileProgram<D>,
+    solid_tile_program: SolidTileProgram,
     fill_colors_texture_uniform: D::Uniform,
     fill_colors_texture_size_uniform: D::Uniform,
 }
 
-impl<D> SolidTileMulticolorProgram<D>
-where
-    D: Device,
+impl SolidTileMulticolorProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> SolidTileMulticolorProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> SolidTileMulticolorProgram {
         let solid_tile_program = SolidTileProgram::new(device, "tile_solid_multicolor", resources);
         let fill_colors_texture_uniform =
             device.get_uniform(&solid_tile_program.program, "FillColorsTexture");
@@ -1241,19 +1146,15 @@ where
     }
 }
 
-struct SolidTileMonochromeProgram<D>
-where
-    D: Device,
+struct SolidTileMonochromeProgram
 {
-    solid_tile_program: SolidTileProgram<D>,
+    solid_tile_program: SolidTileProgram,
     fill_color_uniform: D::Uniform,
 }
 
-impl<D> SolidTileMonochromeProgram<D>
-where
-    D: Device,
+impl SolidTileMonochromeProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> SolidTileMonochromeProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> SolidTileMonochromeProgram {
         let solid_tile_program = SolidTileProgram::new(device, "tile_solid_monochrome", resources);
         let fill_color_uniform = device.get_uniform(&solid_tile_program.program, "FillColor");
         SolidTileMonochromeProgram {
@@ -1263,9 +1164,7 @@ where
     }
 }
 
-struct AlphaTileProgram<D>
-where
-    D: Device,
+struct AlphaTileProgram
 {
     program: D::Program,
     framebuffer_size_uniform: D::Uniform,
@@ -1275,11 +1174,9 @@ where
     view_box_origin_uniform: D::Uniform,
 }
 
-impl<D> AlphaTileProgram<D>
-where
-    D: Device,
+impl AlphaTileProgram
 {
-    fn new(device: &D, program_name: &str, resources: &dyn ResourceLoader) -> AlphaTileProgram<D> {
+    fn new(device: &pfgpu::PfDevice, program_name: &str, resources: &dyn ResourceLoader) -> AlphaTileProgram {
         let program = device.create_program_from_shader_names(
             resources,
             program_name,
@@ -1302,20 +1199,16 @@ where
     }
 }
 
-struct AlphaTileMulticolorProgram<D>
-where
-    D: Device,
+struct AlphaTileMulticolorProgram
 {
-    alpha_tile_program: AlphaTileProgram<D>,
+    alpha_tile_program: AlphaTileProgram,
     fill_colors_texture_uniform: D::Uniform,
     fill_colors_texture_size_uniform: D::Uniform,
 }
 
-impl<D> AlphaTileMulticolorProgram<D>
-where
-    D: Device,
+impl AlphaTileMulticolorProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> AlphaTileMulticolorProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> AlphaTileMulticolorProgram {
         let alpha_tile_program = AlphaTileProgram::new(device, "tile_alpha_multicolor", resources);
         let fill_colors_texture_uniform =
             device.get_uniform(&alpha_tile_program.program, "FillColorsTexture");
@@ -1329,19 +1222,15 @@ where
     }
 }
 
-struct AlphaTileMonochromeProgram<D>
-where
-    D: Device,
+struct AlphaTileMonochromeProgram
 {
-    alpha_tile_program: AlphaTileProgram<D>,
+    alpha_tile_program: AlphaTileProgram,
     fill_color_uniform: D::Uniform,
 }
 
-impl<D> AlphaTileMonochromeProgram<D>
-where
-    D: Device,
+impl AlphaTileMonochromeProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> AlphaTileMonochromeProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> AlphaTileMonochromeProgram {
         let alpha_tile_program = AlphaTileProgram::new(device, "tile_alpha_monochrome", resources);
         let fill_color_uniform = device.get_uniform(&alpha_tile_program.program, "FillColor");
         AlphaTileMonochromeProgram {
@@ -1351,9 +1240,7 @@ where
     }
 }
 
-struct PostprocessProgram<D>
-where
-    D: Device,
+struct PostprocessProgram
 {
     program: D::Program,
     source_uniform: D::Uniform,
@@ -1366,11 +1253,9 @@ where
     bg_color_uniform: D::Uniform,
 }
 
-impl<D> PostprocessProgram<D>
-where
-    D: Device,
+impl PostprocessProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> PostprocessProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> PostprocessProgram {
         let program = device.create_program(resources, "post");
         let source_uniform = device.get_uniform(&program, "Source");
         let source_size_uniform = device.get_uniform(&program, "SourceSize");
@@ -1396,26 +1281,22 @@ where
 }
 
 >>>>>>> master
-struct PostprocessVertexArray<D>
-where
-    D: Device,
+struct PostprocessVertexArray
 {
     vertex_array: D::VertexArray,
 }
 
-impl<D> PostprocessVertexArray<D>
-where
-    D: Device,
+impl PostprocessVertexArray
 {
     fn new(
-        device: &D,
-        postprocess_pipeline: &PostprocessProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-    ) -> PostprocessVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
+        device: &pfgpu::PfDevice,
+        postprocess_pipeline: &PostprocessProgram,
+        quad_vertex_positions_buffer: &pfgpu::Buffer,
+    ) -> PostprocessVertexArray {
+        let vertex_array = device.create_vertex_buffer();
         let position_attr = device.get_vertex_attr(&postprocess_pipeline.program, "Position");
 
-        device.bind_vertex_array(&vertex_array);
+        device.bind_vertex_buffer(&vertex_array);
         device.use_pipeline(&postprocess_pipeline.program);
         device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
         device.configure_float_vertex_attr(&position_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
@@ -1424,41 +1305,33 @@ where
     }
 }
 
-struct StencilProgram<D>
-where
-    D: Device,
+struct StencilProgram
 {
     program: D::Program,
 }
 
-impl<D> StencilProgram<D>
-where
-    D: Device,
+impl StencilProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> StencilProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> StencilProgram {
         let program = device.create_pipeline(resources, "stencil");
         StencilProgram { program }
     }
 }
 
-struct StencilVertexArray<D>
-where
-    D: Device,
+struct StencilVertexArray
 {
     vertex_array: D::VertexArray,
-    vertex_buffer: D::Buffer,
+    vertex_buffer: pfgpu::Buffer,
 }
 
-impl<D> StencilVertexArray<D>
-where
-    D: Device,
+impl StencilVertexArray
 {
-    fn new(device: &D, stencil_pipeline: &StencilProgram<D>) -> StencilVertexArray<D> {
-        let (vertex_array, vertex_buffer) = (device.create_vertex_array(), device.create_buffer());
+    fn new(device: &pfgpu::PfDevice, stencil_pipeline: &StencilProgram) -> StencilVertexArray {
+        let (vertex_array, vertex_buffer) = (device.create_vertex_buffer(), device.create_buffer());
 
         let position_attr = device.get_vertex_attr(&stencil_pipeline.program, "Position");
 
-        device.bind_vertex_array(&vertex_array);
+        device.bind_vertex_buffer(&vertex_array);
         device.use_pipeline(&stencil_pipeline.program);
         device.bind_buffer(&vertex_buffer, BufferTarget::Vertex);
         device.configure_float_vertex_attr(
@@ -1478,9 +1351,7 @@ where
     }
 }
 
-struct ReprojectionProgram<D>
-where
-    D: Device,
+struct ReprojectionProgram
 {
     program: D::Program,
     old_transform_uniform: D::Uniform,
@@ -1488,11 +1359,9 @@ where
     texture_uniform: D::Uniform,
 }
 
-impl<D> ReprojectionProgram<D>
-where
-    D: Device,
+impl ReprojectionProgram
 {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> ReprojectionProgram<D> {
+    fn new(device: &pfgpu::PfDevice, resources: &dyn ResourceLoader) -> ReprojectionProgram {
         let program = device.create_pipeline(resources, "reproject");
         let old_transform_uniform = device.get_uniform(&program, "OldTransform");
         let new_transform_uniform = device.get_uniform(&program, "NewTransform");
@@ -1507,27 +1376,23 @@ where
     }
 }
 
-struct ReprojectionVertexArray<D>
-where
-    D: Device,
+struct ReprojectionVertexArray
 {
     vertex_array: D::VertexArray,
 }
 
-impl<D> ReprojectionVertexArray<D>
-where
-    D: Device,
+impl ReprojectionVertexArray
 {
     fn new(
-        device: &D,
-        reprojection_pipeline: &ReprojectionProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-    ) -> ReprojectionVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
+        device: &pfgpu::PfDevice,
+        reprojection_pipeline: &ReprojectionProgram,
+        quad_vertex_positions_buffer: &pfgpu::Buffer,
+    ) -> ReprojectionVertexArray {
+        let vertex_array = device.create_vertex_buffer();
 
         let position_attr = device.get_vertex_attr(&reprojection_pipeline.program, "Position");
 
-        device.bind_vertex_array(&vertex_array);
+        device.bind_vertex_buffer(&vertex_array);
         device.use_pipeline(&reprojection_pipeline.program);
         device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
         device.configure_float_vertex_attr(&position_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
@@ -1537,9 +1402,7 @@ where
 }
 
 #[derive(Clone)]
-pub enum DestFramebuffer<D>
-where
-    D: Device,
+pub enum DestFramebuffer
 {
     Default {
         viewport: pfgeom::basic::rect::RectI32,
@@ -1548,12 +1411,10 @@ where
     Other(D::pfgpu::Framebuffer),
 }
 
-impl<D> DestFramebuffer<D>
-where
-    D: Device,
+impl DestFramebuffer
 {
     #[inline]
-    pub fn full_window(window_size: Point2DI32) -> DestFramebuffer<D> {
+    pub fn full_window(window_size: Point2DI32) -> DestFramebuffer {
         let viewport = RectI32::new(Point2DI32::default(), window_size);
         DestFramebuffer::Default {
             viewport,
@@ -1561,7 +1422,7 @@ where
         }
     }
 
-    fn window_size(&self, device: &D) -> pfgeom::basic::point::Point2DI32 {
+    fn window_size(&self, device: &pfgpu::PfDevice) -> pfgeom::basic::point::Point2DI32 {
         match *self {
             DestFramebuffer::Default { window_size, .. } => window_size,
             DestFramebuffer::Other(ref framebuffer) => {
@@ -1621,19 +1482,15 @@ impl Div<usize> for RenderStats {
     }
 }
 
-struct RenderTimers<D>
-where
-    D: Device,
+struct RenderTimers
 {
     stage_0: Vec<D::TimerQuery>,
     stage_1: Option<D::TimerQuery>,
 }
 
-impl<D> RenderTimers<D>
-where
-    D: Device,
+impl RenderTimers
 {
-    fn new() -> RenderTimers<D> {
+    fn new() -> RenderTimers {
         RenderTimers {
             stage_0: vec![],
             stage_1: None,

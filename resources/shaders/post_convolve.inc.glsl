@@ -9,7 +9,9 @@
 // except according to those terms.
 
 // Zero if no convolution is to be performed.
-uniform vec4 uKernel;
+layout(std140, set = 2, binding = 0) uniform struct KernelBuffer {
+    vec4 uKernel;
+} kernel;
 
 // This function is expected to return the alpha value of the pixel at the
 // given offset in pixels. Offset 0.0 represents the current pixel.
@@ -20,7 +22,7 @@ void sample9Tap(out vec4 outAlphaLeft,
                 out float outAlphaCenter,
                 out vec4 outAlphaRight,
                 float onePixel) {
-    outAlphaLeft   = vec4(uKernel.x > 0.0 ? sample1Tap(-4.0 * onePixel) : 0.0,
+    outAlphaLeft   = vec4(kernel.uKernel.x > 0.0 ? sample1Tap(-4.0 * onePixel) : 0.0,
                           sample1Tap(-3.0 * onePixel),
                           sample1Tap(-2.0 * onePixel),
                           sample1Tap(-1.0 * onePixel));
@@ -28,10 +30,10 @@ void sample9Tap(out vec4 outAlphaLeft,
     outAlphaRight  = vec4(sample1Tap(1.0 * onePixel),
                           sample1Tap(2.0 * onePixel),
                           sample1Tap(3.0 * onePixel),
-                          uKernel.x > 0.0 ? sample1Tap(4.0 * onePixel) : 0.0);
+                          kernel.uKernel.x > 0.0 ? sample1Tap(4.0 * onePixel) : 0.0);
 }
 
 // Convolves 7 values with the kernel.
 float convolve7Tap(vec4 alpha0, vec3 alpha1) {
-    return dot(alpha0, uKernel) + dot(alpha1, uKernel.zyx);
+    return dot(alpha0, kernel.uKernel) + dot(alpha1, kernel.uKernel.zyx);
 }

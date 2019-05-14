@@ -10,7 +10,7 @@
 
 layout(set = 1, binding = 0) uniform sampler2D uFillColorsTexture;
 layout(set = 1, binding = 1) uniform struct FillColorsTexture {
-    uniform vec2 uFillColorsTexture;
+    vec2 uFillColorsTexture;
 } color_texture;
 
 vec2 computeFillColorTexCoord(uint object, vec2 textureSize) {

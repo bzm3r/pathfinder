@@ -10,7 +10,8 @@
 
 // The lookup table for gamma correction, in the same format WebRender
 // expects.
-uniform sampler2D uGammaLUT;
+
+layout(std140, set = 1, binding = 1) uniform sampler2D uGammaLUT;
 
 float gammaCorrectChannel(float bgColor, float fgColor) {
     return texture(uGammaLUT, vec2(fgColor, 1.0 - bgColor)).r;

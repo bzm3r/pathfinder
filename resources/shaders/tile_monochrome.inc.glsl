@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-layout(set = 0, binding = 0) uniform struct FillColorStruct {
+layout(set = 1, binding = 0) uniform struct FillColorStruct {
     vec4 uFillColor;
 } fill_color;
 

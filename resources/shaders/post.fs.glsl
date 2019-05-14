@@ -15,11 +15,14 @@
 
 precision highp float;
 
-uniform sampler2D uSource;
-uniform vec2 uSourceSize;
-uniform vec4 uFGColor;
-uniform vec4 uBGColor;
-uniform int uGammaCorrectionEnabled;
+layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+    vec2 uSourceSize;
+    vec4 uFGColor;
+    vec4 uBGColor;
+    int uGammaCorrectionEnabled;
+} uniforms;
+
+layout(std140, set = 1, binding = 0) sampler2D uSource;
 
 in vec2 vTexCoord;
 
@@ -30,7 +33,7 @@ out vec4 oFragColor;
 
 // Convolve horizontally in this pass.
 float sample1Tap(float offset) {
-    return texture(uSource, vec2(vTexCoord.x + offset, vTexCoord.y)).r;
+    return texture(uniforms.uSource, vec2(vTexCoord.x + offset, vTexCoord.y)).r;
 }
 
 void main() {
@@ -41,7 +44,7 @@ void main() {
     } else {
         vec4 alphaLeft, alphaRight;
         float alphaCenter;
-        sample9Tap(alphaLeft, alphaCenter, alphaRight, 1.0 / uSourceSize.x);
+        sample9Tap(alphaLeft, alphaCenter, alphaRight, 1.0 / uniforms.uSourceSize.x);
 
         float r = convolve7Tap(alphaLeft, vec3(alphaCenter, alphaRight.xy));
         float g = convolve7Tap(vec4(alphaLeft.yzw, alphaCenter), alphaRight.xyz);
@@ -51,9 +54,9 @@ void main() {
     }
 
     // Apply gamma correction if necessary.
-    if (uGammaCorrectionEnabled != 0)
-        alpha = gammaCorrect(uBGColor.rgb, alpha);
+    if (uniforms.uGammaCorrectionEnabled != 0)
+        alpha = gammaCorrect(uniforms.uBGColor.rgb, alpha);
 
     // Finish.
-    oFragColor = vec4(mix(uBGColor.rgb, uFGColor.rgb, alpha), 1.0);
+    oFragColor = vec4(mix(uniforms.uBGColor.rgb, uniforms.uFGColor.rgb, alpha), 1.0);
 }
