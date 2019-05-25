@@ -12,3 +12,6 @@
 
 pub mod debug;
 pub mod renderer;
+pub mod pipeline_layout_descs;
+pub mod pipelines;
+pub mod render_pass_descs;

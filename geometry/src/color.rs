@@ -87,4 +87,8 @@ impl ColorF {
     pub fn a(&self) -> f32 {
         self.0[3]
     }
+
+    pub fn to_rgba_array(&self) -> [f32;4] {
+        [self.r(), self.g(), self.b(), self.a()]
+    }
 }

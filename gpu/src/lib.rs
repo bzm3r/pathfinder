@@ -23,66 +23,73 @@ extern crate log;
 extern crate shaderc;
 extern crate winit;
 
+use hal::{Instance, Surface, Capability, Device, QueueFamily, PhysicalDevice, };
 use crate::resources::ResourceLoader;
-use image::ImageFormat;
-use pathfinder_geometry::basic::point::Point2DI32;
-use pathfinder_geometry::basic::rect::RectI32;
-use pathfinder_geometry::basic::transform3d::Transform3DF32;
-use pathfinder_geometry::color::ColorF;
-use pathfinder_simd::default::F32x4;
+use image as img_crate;
+use pathfinder_geometry as pfgeom;
+use pathfinder_simd as pfsimd;
 use rustache::HashBuilder;
-use std::time::Duration;
+use rustache::Render;
 
-pub mod pipelines;
 pub mod resources;
 
 pub struct PfDevice {
     instance: back::Instance,
     surface: <Backend as hal::Backend>::Surface,
-    device: <Backend as hal::Backend>::Device,
+    pub device: <Backend as hal::Backend>::Device,
     adapter: hal::Adapter<Backend>,
     queue_group: hal::queue::QueueGroup<Backend, hal::Graphics>,
-    swapchain_framebuffers: <Backend as hal::Backend>::Framebuffer,
+    swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer>,
     swapchain: <Backend as hal::Backend>::Swapchain,
     pub extent: hal::window::Extent2D,
-    backbuffer: hal::window::Backbuffer<Backend>,
-    format: hal::format::Format,
+    mask_render_pass: <Backend as hal::Backend>::RenderPass,
+    draw_render_pass: <Backend as hal::Backend>::RenderPass,
+    postprocess_render_pass: <Backend as hal::Backend>::RenderPass,
+    draw_images: Vec<<Backend as hal::Backend>::Image>,
+    draw_image_format: hal::format::Format,
     frames_in_flight: usize,
     image_available_semaphores: Vec<<Backend as hal::Backend>::Semaphore>,
     render_finished_semaphores: Vec<<Backend as hal::Backend>::Semaphore>,
     in_flight_fences: Vec<<Backend as hal::Backend>::Fence>,
+    mask_framebuffer_cleared_fence: <Backend as hal::Backend>::Fence,
     swapchain_image_views: Vec<(<Backend as hal::Backend>::ImageView)>,
+    command_pool: hal::CommandPool<Backend, hal::Graphics>,
+    submission_command_buffers: Vec<hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>>,
 }
 
 impl PfDevice {
-    unsafe fn new(window: &winit::Window, instance_name: &str) -> HalDevice {
+    pub unsafe fn new(window: &winit::Window, instance_name: &str, mask_render_pass_desc: RenderPassDesc, draw_render_pass_desc: RenderPassDesc, postprocess_render_pass_desc: RenderPassDesc) -> PfDevice {
         let instance = back::Instance::create(instance_name, 1);
 
         let mut surface = instance.create_surface(window);
 
-        let adapter = PfDevice::pick_adapter(&instance, &surface);
+        let mut adapter = PfDevice::pick_adapter(&instance, &surface).unwrap();
 
-        let (mut device, queue_group) =
-            PfDevice::create_device_with_graphics_queues(&adapter, &surface);
+        let (device, queue_group) =
+            PfDevice::create_device_with_graphics_queues(&mut adapter, &surface);
 
-        let (swapchain, extent, backbuffer, swapchain_framebuffer_format, frames_in_flight) =
-            PfDevice::create_swapchain(&adapter, &device, &mut surface, None);
+        let (swapchain, extent, draw_images, draw_image_format, frames_in_flight) =
+            PfDevice::create_swapchain(&mut adapter, &device, &mut surface, None, window);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             PfDevice::create_synchronizers(&device, frames_in_flight);
 
         let swapchain_image_views: Vec<_> =
-            PfDevice::create_image_views(device, backbuffer, swapchain_framebuffer_format);
+            PfDevice::create_image_views(&device, &draw_images, draw_image_format);
+
+        let mask_render_pass = PfDevice::create_render_pass(&device, mask_render_pass_desc);
+        let draw_render_pass = PfDevice::create_render_pass(&device, draw_render_pass_desc);
+        let postprocess_render_pass = PfDevice::create_render_pass(&device, postprocess_render_pass_desc);
 
         let mut swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer> = Vec::new();
 
         for image_view in swapchain_image_views.iter() {
-            swapchain_framebuffer.push(
+            swapchain_framebuffers.push(
                 device
                     .create_framebuffer(
-                        render_pass,
+                        &draw_render_pass,
                         vec![image_view],
-                        hal::image::Extent {
+                        hal::img_crate::Extent {
                             width: extent.width as _,
                             height: extent.height as _,
                             depth: 1,
@@ -97,14 +104,16 @@ impl PfDevice {
                 &queue_group,
                 hal::pool::CommandPoolCreateFlags::RESET_INDIVIDUAL,
             )
-            .map_err(|_| "Could not create raw command pool.")?;
+            .unwrap();
 
-        let submission_command_buffers: Vec<_> = swapchain_framebuffer
+        let submission_command_buffers: Vec<_> = swapchain_framebuffers
             .iter()
             .map(|_| command_pool.acquire_command_buffer())
             .collect();
 
-        HalDevice {
+        let mask_framebuffer_cleared_fence = PfDevice::create_fence(&device);
+
+        PfDevice {
             instance,
             surface,
             device,
@@ -113,21 +122,43 @@ impl PfDevice {
             swapchain_framebuffers,
             swapchain,
             extent,
-            backbuffer,
-            format,
+            mask_render_pass,
+            draw_render_pass,
+            postprocess_render_pass,
+            draw_images,
+            draw_image_format,
             frames_in_flight,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
+            mask_framebuffer_cleared_fence,
             swapchain_image_views,
+            command_pool,
+            submission_command_buffers,
         }
+    }
+
+    fn create_fence(device: &<Backend as hal::Backend>::Device) -> <Backend as hal::Backend>::Fence {
+        device.create_fence().unwrap()
+    }
+
+    pub unsafe fn create_render_pass(device: &<Backend as hal::Backend>::Device, render_pass_desc: RenderPassDesc) -> <Backend as hal::Backend>::RenderPass {
+        let subpass = hal::pass::SubpassDesc {
+            colors: &render_pass_desc.subpass_colors,
+            inputs: &render_pass_desc.subpass_inputs,
+            depth_stencil: None,
+            resolves: &[],
+            preserves: &[],
+        };
+
+        device.create_render_pass(&render_pass_desc.attachments, &[subpass], &[]).unwrap()
     }
 
     fn pick_adapter(
         instance: &back::Instance,
         surface: &<Backend as hal::Backend>::Surface,
     ) -> Result<hal::Adapter<Backend>, &'static str> {
-        // pick appropriate physical device (adapter)
+        // pick appropriate physical device (physical_device)
         instance
             .enumerate_adapters()
             .into_iter()
@@ -136,17 +167,15 @@ impl PfDevice {
                     .iter()
                     .any(|qf| qf.supports_graphics() && surface.supports_queue_family(qf))
             })
-            .ok_or("No physical device available with queue families which support graphics and presentation to surface.")?
+            .ok_or("No physical device available with queue families which support graphics and presentation to surface.")
     }
 
     fn create_device_with_graphics_queues(
-        adapter: &mut hal::adapter::Adapter<Backend>,
+        adapter: &mut hal::Adapter<Backend>,
         surface: &<Backend as hal::Backend>::Surface,
     ) -> (
         <Backend as hal::Backend>::Device,
         hal::queue::QueueGroup<Backend, hal::Graphics>,
-        hal::queue::QueueType,
-        hal::queue::family::QueueFamilyId,
     ) {
         let family = adapter
             .queue_families
@@ -168,15 +197,15 @@ impl PfDevice {
                 .expect("Could not create device.")
         };
 
-        let mut queue_group = queues
+        let queue_group = queues
             .take::<hal::Graphics>(family.id())
             .expect("Could not take ownership of relevant queue group.");
 
-        (device, queue_group, family.queue_type(), family.id())
+        (device, queue_group)
     }
 
-    fn create_swap_chain(
-        adapter: &hal::adapter::Adapter<Backend>,
+    unsafe fn create_swapchain(
+        adapter: &mut hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         surface: &mut <Backend as hal::Backend>::Surface,
         previous_swapchain: Option<<Backend as hal::Backend>::Swapchain>,
@@ -184,31 +213,14 @@ impl PfDevice {
     ) -> (
         <Backend as hal::Backend>::Swapchain,
         hal::window::Extent2D,
-        hal::window::Backbuffer<Backend>,
+        Vec<<Backend as hal::Backend>::Image>,
         hal::format::Format,
         usize,
     ) {
-        let (caps, compatible_formats, compatible_present_modes, composite_alphas) =
-            surface.compatibility(&adapter.physical_device);
+        let (capabilities, compatible_formats, _compatible_present_modes) =
+            surface.compatibility(&mut adapter.physical_device);
 
-        let present_mode = {
-            use hal::window::PresentMode::{Fifo, Immediate, Mailbox, Relaxed};
-            [Mailbox, Fifo, Relaxed, Immediate]
-                .iter()
-                .cloned()
-                .find(|pm| compatible_present_modes.contains(pm))
-                .ok_or("Surface does not support any known presentation mode.")?
-        };
-
-        let composite_alpha = {
-            hal::window::CompositeAlpha::all()
-                .iter()
-                .cloned()
-                .find(|ca| composite_alphas.contains(ca))
-                .ok_or("Surface does not support any known alpha composition mode.")?
-        };
-
-        let format = match compatible_formats {
+        let draw_image_format = match compatible_formats {
             None => hal::format::Format::Rgba8Srgb,
             Some(formats) => match formats
                 .iter()
@@ -219,19 +231,20 @@ impl PfDevice {
                 None => formats
                     .get(0)
                     .cloned()
-                    .ok_or("Surface does not support any known format.")?,
+                    .ok_or("Surface does not support any known format.")
+                    .unwrap(),
             },
         };
 
         let extent = {
             let window_client_area = window
                 .get_inner_size()
-                .ok_or("Window doesn't exist!")?
+                .unwrap()
                 .to_physical(window.get_hidpi_factor());
 
             hal::window::Extent2D {
-                width: caps.extents.end.width.min(window_client_area.width as u32),
-                height: caps
+                width: capabilities.extents.end.width.min(window_client_area.width as u32),
+                height: capabilities
                     .extents
                     .end
                     .height
@@ -239,37 +252,19 @@ impl PfDevice {
             }
         };
 
-        let image_count = if present_mode == hal::window::PresentMode::Mailbox {
-            (caps.image_count.end - 1).min(3)
-        } else {
-            (caps.image_count.end - 1).min(2)
-        };
+        let swapchain_config = hal::window::SwapchainConfig::from_caps(&capabilities, draw_image_format, extent);
 
-        let image_layers = 1;
+        let (swapchain, draw_images) = device
+            .create_swapchain(surface, swapchain_config, previous_swapchain)
+            .unwrap();
 
-        let image_usage = if caps.usage.contains(hal::image::Usage::COLOR_ATTACHMENT) {
-            hal::image::Usage::COLOR_ATTACHMENT
-        } else {
-            Err("Surface does not support color attachments.")?
-        };
+        (swapchain, extent, draw_images, draw_image_format, (capabilities.image_count.end - 1) as usize)
+    }
 
-        let swapchain_config = hal::window::SwapchainConfig {
-            present_mode,
-            composite_alpha,
-            format,
-            extent,
-            image_count,
-            image_layers,
-            image_usage,
-        };
-
-        let (swapchain, backbuffer) = unsafe {
-            device
-                .create_swapchain(surface, swapchain_config, None)
-                .map_err(|_| "Could not create swapchain.")?
-        };
-
-        (swapchain, extent, backbuffer, format, image_count as usize)
+    pub fn extent(&self) -> pfgeom::basic::rect::RectI32 {
+        let origin = pfgeom::basic::point::Point2DI32::default();
+        let size = pfgeom::basic::point::Point2DI32::new(self.extent.width as i32, self.extent.height as i32);
+        pfgeom::basic::rect::RectI32::new(origin, size)
     }
 
     fn create_synchronizers(
@@ -299,67 +294,72 @@ impl PfDevice {
 
     unsafe fn create_image_views(
         device: &<Backend as hal::Backend>::Device,
-        backbuffer: hal::window::Backbuffer<Backend>,
+        images: &Vec<<Backend as hal::Backend>::Image>,
         requested_format: hal::format::Format,
     ) -> Vec<<Backend as hal::Backend>::ImageView> {
-        match backbuffer {
-            hal::window::Backbuffer::Images(images) => images
-                .into_iter()
-                .map(|image| {
-                    let image_view = match device.create_image_view(
+        images
+            .into_iter()
+            .map(|image| {
+                device
+                    .create_image_view(
                         &image,
-                        hal::image::ViewKind::D2,
+                        hal::img_crate::ViewKind::D2,
                         requested_format,
                         hal::format::Swizzle::NO,
-                        hal::image::SubresourceRange {
+                        hal::img_crate::SubresourceRange {
                             aspects: hal::format::Aspects::COLOR,
                             levels: 0..1,
                             layers: 0..1,
                         },
-                    ) {
-                        Ok(image_view) => image_view,
-                        Err(_) => panic!("Error creating image view for an image."),
-                    };
-
-                    image_view
-                })
-                .collect(),
-            _ => unimplemented!(),
-        }
-    }
-
-    pub unsafe fn create_framebuffer(&self,
-        render_pass: &<Backend as hal::Backend>::RenderPass,
-        image_views: &[<Backend as hal::Backend>::ImageView],
-    ) -> Vec<<Backend as hal::Backend>::Framebuffer> {
-        let mut framebuffer: Vec<<Backend as hal::Backend>::Framebuffer> = Vec::new();
-
-        for image_view in image_views.iter() {
-            swapchain_framebuffer.push(
-                self.device
-                    .create_framebuffer(
-                        render_pass,
-                        vec![image_view],
-                        hal::image::Extent {
-                            width: self.extent.width as _,
-                            height: self.extent.height as _,
-                            depth: 1,
-                        },
                     )
-                    .expect("Could not create framebuffer."),
-            );
-        }
-
-        framebuffer
+                    .unwrap()
+            })
+            .collect()
     }
 
-    pub fn compose_shader_module(
+    pub unsafe fn create_framebuffer(&mut self,
+        render_pass: &<Backend as hal::Backend>::RenderPass,
+        image: Image,
+    ) -> Framebuffer {
+        let image_view = self.device
+            .create_image_view(
+                texture,
+                hal::img_crate::ViewKind::D2,
+                TextureFormat::to_hal_format(texture_format),
+                hal::format::Swizzle::NO,
+                hal::img_crate::SubresourceRange {
+                    aspects: hal::format::Aspects::COLOR,
+                    levels: 0..1,
+                    layers: 0..1,
+                },
+            );
+
+        let framebuffer = self
+            .device
+            .create_framebuffer(
+                render_pass,
+                vec![image_view],
+                hal::img_crate::Extent {
+                    width: texture_size.x() as u32,
+                    height: texture_size.y() as u32,
+                    depth: 1,
+                },
+            );
+
+        Framebuffer {
+            framebuffer,
+            image_view,
+            image,
+        }
+    }
+
+    pub unsafe fn compose_shader_module(
         &self,
         resources: &dyn ResourceLoader,
         name: &str,
         shader_kind: ShaderKind,
     ) -> <Backend as hal::Backend>::ShaderModule {
-        let shader_kind_char = match kind {
+        let shader_kind_char = match shader_kind {
             ShaderKind::Vertex => 'v',
             ShaderKind::Fragment => 'f',
         };
@@ -396,12 +396,18 @@ impl PfDevice {
                 &mut load_include_post_gamma_correct,
             );
 
-        let mut compiler = shaderc::Compiler::new().ok_or("shaderc not found!")?;
+        let mut output = std::io::Cursor::new(vec![]);
+        template_input.render(std::str::from_utf8(&source).unwrap(), &mut output).unwrap();
+        let source = output.into_inner();
+
+        let mut compiler = shaderc::Compiler::new()
+            .ok_or("shaderc not found!")
+            .unwrap();
 
         let artifact = compiler
             .compile_into_spirv(
-                str::from_utf8(&source).unwrap(),
-                match kind {
+                std::str::from_utf8(&source).unwrap(),
+                match shader_kind {
                     ShaderKind::Vertex => shaderc::ShaderKind::Vertex,
                     ShaderKind::Fragment => shaderc::ShaderKind::Fragment,
                 },
@@ -409,33 +415,68 @@ impl PfDevice {
                 "main",
                 None,
             )
-            .map_err(|_| "Could not compile shader.")?;
+            .unwrap();
 
-        let shader_module = unsafe {
-            self.device
-                .create_shader_module(artifact.as_binary_u8())
-                .map_err(|_| "Could not make shader_module")?
-        };
+        let shader_module = self.device.create_shader_module(artifact.as_binary_u8())
+            .unwrap();
 
         shader_module
     }
 
     pub unsafe fn create_vertex_buffer(&self, size: u64) -> Buffer {
-        Buffer::new(&self.adapter, &self.device, size, hal::buffer::Usage::Vertex)
+        Buffer::new(&self.adapter, &self.device, size, hal::buffer::Usage::VERTEX)
     }
 
-    pub unsafe fn create_texture_from_png(&self, resources: &dyn ResourceLoader, name: &str)  -> Texture {
+    pub unsafe fn create_texture_from_png(&mut self, resources: &dyn ResourceLoader, name: &str)  -> Image {
         let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
-        let image = image::load_from_memory_with_format(&data, ImageFormat::PNG).unwrap().to_luma();
-        let size = Point2DI32::new(image.width() as i32, image.height() as i32);
+        let image = img_crate::load_from_memory_with_format(&data, img_crate::ImageFormat::PNG).unwrap().to_luma();
+        let pixel_size= std::mem::size_of::<img_crate::Luma<u8>>();
+        let size = pfgeom::Point2DI32::new(image.width() as i32, image.height() as i32);
 
-        Texture::new_from_data(&self.adapter, &self.device, size, &data)
+        img_crate::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.queue_group.queues[0], size, pixel_size, &data)
     }
 
     pub unsafe fn create_texture(&self,
                                  format: TextureFormat,
-                                 size: Point2DI32) -> Texture {
-        Texture::new(&self.device, format, size)
+                                 size: pfgeom::Point2DI32) -> Image {
+        img_crate::new(&self.adapter, &self.device, format, size)
+    }
+
+    pub unsafe fn upload_data_to_buffer<T>(&self, data: &[T]) where T: Copy {
+        buffer.upload_data::<T>(&self.device, data);
+    }
+    
+    pub unsafe fn clear_image(&mut self, image: &Image, clear_params: ClearParams) {
+        self.device.reset_fence(&self.mask_framebuffer_cleared_fence).unwrap();
+
+        let mut cmd_buffer = self.command_pool.acquire_command_buffer::<hal::command::OneShot>();
+        cmd_buffer.begin();
+
+        let clear_color: [f32;4] = {
+            match clear_params.color {
+                Some(color) => color.to_rgba_array(),
+                _ => {
+                    let color = pfgeom::color::ColorF::transparent_black();
+                    color.to_rgba_array()
+                }
+            }
+        };
+
+        let depth_stencil: hal::command::ClearDepthStencil = {
+            let depth = clear_params.depth.unwrap_or(0.0);
+            let stencil = clear_params.stencil.unwrap_or(0) as u32;
+
+            hal::command::ClearDepthStencil(depth, stencil)
+        };
+
+        cmd_buffer.clear_image(&(image.image), hal::image::Layout::ColorAttachmentOptimal, clear_color, depth_stencil);
+
+        cmd_buffer.finish();
+
+        self.queue_group.queues[0]
+            .submit_nosemaphores(std::iter::once(&cmd_buffer), &self.mask_framebuffer_cleared_fence);
+
+        self.device.wait_for_fence(&self.mask_framebuffer_cleared_fence).unwrap();
     }
 }
 
@@ -447,10 +488,27 @@ fn load_shader_include(resources: &dyn ResourceLoader, include_name: &str) -> St
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum StencilFunc {
+    Always,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum TextureFormat {
     R8,
     R16F,
     RGBA8,
+}
+
+impl TextureFormat {
+    pub fn to_hal_format(texture_format: TextureFormat) -> hal::format::Format {
+        match texture_format {
+            TextureFormat::R8 => hal::format::Format::R8Uint,
+            TextureFormat::R16F => hal::format::Format::R16Sfloat,
+            TextureFormat::RGBA8 => hal::format::Format::Rgba8Srgb,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -494,10 +552,10 @@ pub enum GlslStyle {
 #[derive(Clone, Copy)]
 pub enum UniformData {
     Int(i32),
-    Mat2(F32x4),
-    Mat4([F32x4; 4]),
-    Vec2(F32x4),
-    Vec4(F32x4),
+    Mat2(pfsimd::default::F32x4),
+    Mat4([pfsimd::default::F32x4; 4]),
+    Vec2(pfsimd::default::F32x4),
+    Vec4(pfsimd::default::F32x4),
     TextureUnit(u32),
 }
 
@@ -510,8 +568,8 @@ pub enum Primitive {
 
 #[derive(Clone, Copy, Default)]
 pub struct ClearParams {
-    pub color: Option<ColorF>,
-    pub rect: Option<RectI32>,
+    pub color: Option<pfgeom::color::ColorF>,
+    pub rect: Option<pfgeom::basic::RectI32>,
     pub depth: Option<f32>,
     pub stencil: Option<u8>,
 }
@@ -536,9 +594,16 @@ pub enum DepthFunc {
     Always,
 }
 
+impl Default for DepthFunc {
+    #[inline]
+    fn default() -> DepthFunc {
+        DepthFunc::Less
+    }
+}
+
 impl UniformData {
     #[inline]
-    pub fn from_transform_3d(transform: &Transform3DF32) -> UniformData {
+    pub fn from_transform_3d(transform: &pfgeom::basic::Transform3DF32) -> UniformData {
         UniformData::Mat4([transform.c0, transform.c1, transform.c2, transform.c3])
     }
 }
@@ -551,27 +616,23 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    unsafe fn upload_data<T>(&self, device: <Backend as hal::Backend>::Device, data: &[T]) where T: Copy {
-        // should we assert!(data.len() < self.requirements.size) ?
+    pub unsafe fn upload_data<T>(&self, device: <Backend as hal::Backend>::Device, data: &[T]) where T: Copy {
+        // should we assert!(data.len() < self.requirements.size)?
         let mut writer = device
-            .acquire_mapping_writer::<T>(&self.memory, 0..&self.requirements.size)
+            .acquire_mapping_writer::<T>(&self.memory, 0..self.requirements.size)
             .unwrap();
         writer[0..data.len()].copy_from_slice(data);
-        writer.release_mapping_writer(vertices).unwrap();
+        device.release_mapping_writer(writer).unwrap();
     }
 
     unsafe fn new(
-        adapter: &<Backend as hal::Backend>::Adapter,
+        adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         size: u64,
         usage: hal::buffer::Usage,
     ) -> Buffer {
-        let mut buffer = device.create_buffer(size, usage).map_err(|_| {
-            format!(
-                "Unable to create buffer of size {} and usage type{}",
-                size, usage
-            )
-        })?;
+        let mut buffer = device.create_buffer(size, usage)
+            .unwrap();;
 
         let requirements = device.get_buffer_requirements(&buffer);
 
@@ -588,15 +649,16 @@ impl Buffer {
                         .contains(hal::memory::Properties::CPU_VISIBLE)
             })
             .map(|(id, _)| hal::adapter::MemoryTypeId(id))
-            .ok_or("Adapter cannot supply required memory.")?;
+            .ok_or("PhysicalDevice cannot supply required memory.")
+            .unwrap();;
 
         let memory = device
             .allocate_memory(memory_type_id, requirements.size)
-            .map_err(|_| "Could not allocate memory on device.")?;
+            .unwrap();;
 
         device
             .bind_buffer_memory(&memory, 0, &mut buffer)
-            .map_err(|_| "Could not bind memory to device.")?;
+            .unwrap();;
 
         Buffer {
             usage,
@@ -613,146 +675,126 @@ impl Buffer {
     }
 }
 
-pub struct Texture {
+pub struct Image {
     image: <Backend as hal::Backend>::Image,
     requirements: hal::memory::Requirements,
     memory: <Backend as hal::Backend>::Memory,
-    image_view: <Backend as hal::Backend>::ImageView,
-    sampler: <Backend as hal::Backend>::Sampler,
+    size: pfgeom::Point2DI32,
+    format: TextureFormat,
 }
 
-impl Texture {
-    fn new(
+impl Image {
+    unsafe fn new(
+        adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
-        format: TextureFormat,
-        size: Point2DI32,
-    ) -> Texture {
+        texture_format: TextureFormat,
+        size: pfgeom::Point2DI32,
+    ) -> Image {
         // 3. Make an image with transfer_dst and SAMPLED usage
         let mut image = device
             .create_image(
-                hal::image::Kind::D1(data.len(), 1),
+                hal::img_crate::Kind::D2(size.x() as u32, size.y() as u32, 1, 0),
                 1,
-                Format::Rgba8Srgb,
-                hal::image::Tiling::Optimal,
-                hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
-                hal::image::ViewCapabilities::empty(),
+                texture_format,
+                hal::img_crate::Tiling::Optimal,
+                hal::img_crate::Usage::TRANSFER_DST | hal::img_crate::Usage::SAMPLED,
+                hal::img_crate::ViewCapabilities::empty(),
             )
-            .map_err(|_| "Couldn't create the image!")?;
+            .unwrap();;
 
         // 4. allocate memory for the image and bind it
         let requirements = device.get_image_requirements(&image);
 
-        let memory_type_id = adapter
+        let upload_type = adapter
             .physical_device
             .memory_properties()
             .memory_types
             .iter()
             .enumerate()
-            .find(|&(id, memory_type)| {
-                // BIG NOTE: THIS IS DEVICE LOCAL NOT CPU VISIBLE
+            .position(|(id, mem_type)| {
                 requirements.type_mask & (1 << id) != 0
-                    && memory_type.properties.contains(Properties::DEVICE_LOCAL)
+                    && mem_type.properties.contains(hal::memory::Properties::DEVICE_LOCAL)
             })
-            .map(|(id, _)| hal::adpater::MemoryTypeId(id))
-            .ok_or("Couldn't find a memory type to support the image!")?;
+            .unwrap()
+            .into();
 
         let memory = device
-            .allocate_memory(memory_type_id, requirements.size)
-            .map_err(|_| "Couldn't allocate image memory!")?;
+            .allocate_memory(upload_type, requirements.size)
+            .unwrap();;
 
         device
             .bind_image_memory(&memory, 0, &mut image)
-            .map_err(|_| "Couldn't bind the image memory!")?;
+            .unwrap();;
 
-        // 5. create image view and sampler
-        let image_view = device
-            .create_image_view(
-                &image,
-                hal::image::ViewKind::D2,
-                Format::Rgba8Srgb,
-                hal::format::Swizzle::NO,
-                hal::image::SubresourceRange {
-                    aspects: Aspects::COLOR,
-                    levels: 0..1,
-                    layers: 0..1,
-                },
-            )
-            .map_err(|_| "Couldn't create the image view!")?;
-
-        let sampler = device
-            .create_sampler(hal::image::SamplerInfo::new(
-                hal::image::Filter::Nearest,
-                hal::image::WrapMode::Tile,
-            ))
-            .map_err(|_| "Couldn't create the sampler!")?;
-
-        Texture {
+        Image {
             image,
             requirements,
             memory,
-            image_view,
-            sampler,
+            size,
+            format: texture_format,
         }
     }
 
-    unsafe fn new_from_data(adapter: &<Backend as hal::Backend>::Adapter, device: &<Backend as hal::Backend>::Device, size: Point2DI32, data: &[u8]) -> Texture {
-        let texture = Texture::create_texture(hal::format::R8Unorm, size);
+    unsafe fn new_from_data(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>, command_queue: &mut hal::CommandQueue<back::Backend, hal::Graphics>, size: pfgeom::Point2DI32, texel_size: usize, data: &[u8]) -> Image {
+        let texture = img_crate::new(adapter, device, TextureFormat::R8, size);
 
         let staging_buffer =
-            Buffer::new(&adapter, device, (size.x * size.y) as u64, BufferUsage::TRANSFER_SRC)?;
+            Buffer::new(adapter, device, (size.x() * size.y()) as u64, hal::buffer::Usage::TRANSFER_SRC);
 
         let mut writer = device
-            .acquire_mapping_writer::<u8>(&staging_bundle.memory, 0..staging_buffer.requirements.size)
-            .map_err(|_| "Could not acquire mapping writer.")?;
+            .acquire_mapping_writer::<u8>(&staging_buffer.memory, 0..staging_buffer.requirements.size)
+            .unwrap();;
         writer[0..data.len()].copy_from_slice(data);
         device
             .release_mapping_writer(writer)
-            .map_err(|_| "Couldn't release the mapping writer to the staging buffer!")?;
+            .unwrap();;
 
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<gfx_hal::command::OneShot>();
+        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
         cmd_buffer.begin();
 
         // 7. Use a pipeline barrier to transition the image from empty/undefined
         //    to TRANSFER_WRITE/TransferDstOptimal
-        let image_barrier = gfx_hal::memory::Barrier::Image {
-            states: (gfx_hal::image::Access::empty(), hal::image::Layout::Undefined)
+        let image_barrier = hal::memory::Barrier::Image {
+            states: (hal::img_crate::Access::empty(), hal::img_crate::Layout::Undefined)
                 ..(
-                gfx_hal::image::Access::TRANSFER_WRITE,
-                hal::image::Layout::TransferDstOptimal,
+                hal::img_crate::Access::TRANSFER_WRITE,
+                hal::img_crate::Layout::TransferDstOptimal,
             ),
             target: &texture.image,
             families: None,
-            range: hal::image::SubresourceRange {
-                aspects: Aspects::COLOR,
+            range: hal::img_crate::SubresourceRange {
+                aspects: hal::format::Aspects::COLOR,
                 levels: 0..1,
                 layers: 0..1,
             },
         };
 
         cmd_buffer.pipeline_barrier(
-            PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
-            gfx_hal::memory::Dependencies::empty(),
+            hal::pso::PipelineStage::TOP_OF_PIPE..hal::pso::PipelineStage::TRANSFER,
+            hal::memory::Dependencies::empty(),
             &[image_barrier],
         );
 
+        let row_pitch = texel_size * (size.x() as usize);
+
         // 8. perform copy from staging buffer to image
         cmd_buffer.copy_buffer_to_image(
-            &staging_bundle.buffer,
+            &staging_buffer.buffer,
             &texture.image,
-            hal::image::Layout::TransferDstOptimal,
-            &[gfx_hal::command::BufferImageCopy {
+            hal::img_crate::Layout::TransferDstOptimal,
+            &[hal::command::BufferImageCopy {
                 buffer_offset: 0,
-                buffer_width: (row_pitch / pixel_size) as u32,
-                buffer_height: img.height(),
-                image_layers: gfx_hal::image::SubresourceLayers {
-                    aspects: Aspects::COLOR,
+                buffer_width: (row_pitch / texel_size) as u32,
+                buffer_height: size.y() as u32,
+                image_layers: hal::img_crate::SubresourceLayers {
+                    aspects: hal::format::Aspects::COLOR,
                     level: 0,
                     layers: 0..1,
                 },
-                image_offset: gfx_hal::image::Offset { x: 0, y: 0, z: 0 },
-                image_extent: gfx_hal::image::Extent {
-                    width: img.width(),
-                    height: img.height(),
+                image_offset: hal::img_crate::Offset { x: 0, y: 0, z: 0 },
+                image_extent: hal::img_crate::Extent {
+                    width: size.x() as u32,
+                    height: size.y() as u32,
                     depth: 1,
                 },
             }],
@@ -760,27 +802,27 @@ impl Texture {
 
         // 9. use pipeline barrier to transition the image to SHADER_READ access/
         //    ShaderReadOnlyOptimal layout
-        let image_barrier = gfx_hal::memory::Barrier::Image {
+        let image_barrier = hal::memory::Barrier::Image {
             states: (
-                gfx_hal::image::Access::TRANSFER_WRITE,
-                hal::image::Layout::TransferDstOptimal,
+                hal::img_crate::Access::TRANSFER_WRITE,
+                hal::img_crate::Layout::TransferDstOptimal,
             )
                 ..(
-                gfx_hal::image::Access::SHADER_READ,
-                hal::image::Layout::ShaderReadOnlyOptimal,
+                hal::img_crate::Access::SHADER_READ,
+                hal::img_crate::Layout::ShaderReadOnlyOptimal,
             ),
             target: &texture.image,
             families: None,
-            range: hal::image::SubresourceRange {
-                aspects: Aspects::COLOR,
+            range: hal::img_crate::SubresourceRange {
+                aspects: hal::format::Aspects::COLOR,
                 levels: 0..1,
                 layers: 0..1,
             },
         };
 
         cmd_buffer.pipeline_barrier(
-            PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
-            gfx_hal::memory::Dependencies::empty(),
+            hal::pso::PipelineStage::TRANSFER..hal::pso::PipelineStage::FRAGMENT_SHADER,
+            hal::memory::Dependencies::empty(),
             &[image_barrier],
         );
 
@@ -789,25 +831,92 @@ impl Texture {
 
         let upload_fence = device
             .create_fence(false)
-            .map_err(|_| "Couldn't create an upload fence!")?;
+            .unwrap();;
+
         command_queue.submit_nosemaphores(Some(&cmd_buffer), Some(&upload_fence));
 
         device
             .wait_for_fence(&upload_fence, core::u64::MAX)
-            .map_err(|_| "Couldn't wait for the fence!")?;
+            .unwrap();;
 
         device.destroy_fence(upload_fence);
 
         texture
     }
 
-    pub fn destroy_texture(device: &<Backend as hal::Backend>::Device, texture: Texture) {
-        let Texture { image_view: imview, memory: mem, .. } = texture;
-        device.destroy_image_view(imview);
+    unsafe fn destroy_image(device: &<Backend as hal::Backend>::Device, image: Image) {
+        let Image { image: img, memory: mem, .. } = image;
+        device.destroy_image(img);
         device.free_memory(mem);
+    }
+
+    pub fn size(&self) -> pfgeom::basic::point::Point2DI32 {
+        &self.size
     }
 }
 
 pub struct Framebuffer {
-    framebuffers: Vec<<Backend as hal::Backend>::Framebuffer>,
+    framebuffer: Option<<Backend as hal::Backend>::Framebuffer>,
+    image: Option<<Backend as hal::Backend>::Image>,
+    image_view: Option<<Backend as hal::Backend>::ImageView>,
+}
+
+impl Framebuffer {
+    pub unsafe fn destroy_framebuffer(device: &<Backend as hal::Backend>::Device, mut framebuffer: Framebuffer) {
+        device.destroy_image_view(framebuffer.image_view.take());
+        Image::destroy_image(device, framebuffer.image.take());
+        device.destroy_framebuffer(framebuffer.framebuffer.take());
+    }
+
+    pub fn image(&self) -> &Image {
+        &self.image.unwrap()
+    }
+}
+
+pub enum RenderPassVariants {
+    Mask,
+    Draw,
+    Postprocess,
+}
+
+pub struct RenderPassDesc {
+    attachments: Vec<hal::pass::Attachment>,
+    subpass_colors: Vec<hal::pass::AttachmentRef>,
+    subpass_inputs: Vec<hal::pass::AttachmentRef>,
+}
+
+pub struct PipelineLayout {
+    descriptor_set_layouts: Vec<<Backend as hal::Backend>::DescriptorSetLayout>,
+    pipeline_layout: <Backend as hal::Backend>::PipelineLayout,
+    render_pass: <Backend as hal::Backend>::RenderPass,
+}
+
+impl PipelineLayout {
+    pub fn new(device: &<Backend as hal::Backend>::Device, descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, render_pass: <Backend as hal::Backend>::RenderPass) -> PipelineLayout {
+        let immutable_samplers = Vec::<<Backend as hal::Backend>::Sampler>::new();
+
+        let descriptor_set_layouts: Vec<<Backend as hal::Backend>::DescriptorSetLayout> = vec![
+            device
+                .create_descriptor_set_layout(
+                    descriptor_set_layout_bindings,
+                    immutable_samplers,
+                )
+                .unwrap(),
+        ];
+
+        let push_constants = Vec::<(hal::pso::ShaderStageFlags, core::ops::Range<u32>)>::new();
+
+        let pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&descriptor_set_layouts, push_constants)
+                .unwrap()
+        };
+
+
+        PipelineLayout {
+            pipeline_layout,
+            descriptor_set_layouts,
+            render_pass,
+        }
+    }
 }

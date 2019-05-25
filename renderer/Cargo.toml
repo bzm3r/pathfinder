@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2018"
 authors = ["Patrick Walton <pcwalton@mimiga.net>"]
 
+[features]
+default = []
+metal = ["gfx-backend-metal", "pathfinder_gpu/metal"]
+dx12 = ["gfx-backend-dx12", "pathfinder_gpu/dx12"]
+vulkan = ["gfx-backend-vulkan", "pathfinder_gpu/vulkan"]
+
 [dependencies]
 byteorder = "1.2"
 fixedbitset = "0.1"
@@ -12,6 +18,7 @@ rayon = "1.0"
 serde = "1.0"
 serde_json = "1.0"
 smallvec = "0.6"
+gfx-hal = { version = "0.2", git = "https://github.com/gfx-rs/gfx", branch = "master" }
 
 [dependencies.log]
 version = "0.4"
@@ -26,9 +33,23 @@ path = "../gpu"
 [dependencies.pathfinder_simd]
 path = "../simd"
 
-[dependencies.pathfinder_ui]
-path = "../ui"
-
 [dev-dependencies]
 quickcheck = "0.7"
 
+[dependencies.gfx-backend-vulkan]
+version = "0.2"
+git = "https://github.com/gfx-rs/gfx"
+branch = "master"
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.gfx-backend-metal]
+version = "0.2"
+git = "https://github.com/gfx-rs/gfx"
+branch = "master"
+optional = true
+
+[target.'cfg(windows)'.dependencies.gfx-backend-dx12]
+version = "0.2"
+git = "https://github.com/gfx-rs/gfx"
+branch = "master"
+optional = true
