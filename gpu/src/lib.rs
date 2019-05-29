@@ -276,7 +276,7 @@ impl<'a> DrawRenderer<'a> {
         let alpha_tile_monochrome_pipeline = pipelines::create_solid_tile_monochrome_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
         let stencil_pipeline = pipelines::create_stencil_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
         let postprocess_pipeline = pipelines::create_postprocess_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        
+
         DrawRenderer {
             device,
             solid_tile_multicolor_pipeline,
