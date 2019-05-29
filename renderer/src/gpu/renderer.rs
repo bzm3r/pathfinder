@@ -66,7 +66,6 @@ pub struct Renderer {
     area_lut_texture: pfgpu::Image,
     quad_vertex_positions_buffer: pfgpu::Buffer,
     fill_vertex_buffer: pfgpu::Buffer,
-    mask_framebuffer: pfgpu::Framebuffer,
     fill_colors_texture: pfgpu::Image,
 
     // Postprocessing shader
@@ -124,10 +123,6 @@ impl Renderer {
         let stencil_vertex_buffer = StencilVertexBuffer::new(&device, QUAD_VERTEX_POSITIONS.len() as u64);
         //let reprojection_vertex_buffer = ReprojectionVertexBuffer::new(&device, MAX_REPROJECTION_VERTICES);
 
-        let mask_framebuffer_size =
-            pfgeom::basic::point::Point2DI32::new(MASK_FRAMEBUFFER_WIDTH, MASK_FRAMEBUFFER_HEIGHT);
-        let mask_framebuffer_texture = device.create_texture(pfgpu::TextureFormat::R16F, mask_framebuffer_size);
-        let mask_framebuffer = device.create_framebuffer(mask_framebuffer_texture, &fill_pipeline.render_pass);
 
         let fill_colors_size =
             pfgeom::basic::point::Point2DI32::new(FILL_COLORS_TEXTURE_WIDTH, FILL_COLORS_TEXTURE_HEIGHT);
@@ -177,36 +172,23 @@ impl Renderer {
     pub unsafe fn begin_scene(&mut self) {
         self.init_postprocessing_framebuffer();
 
-        self.mask_framebuffer_cleared = false;
+        self.device.mask_framebuffer.set_clear_status(false);
     }
 
     unsafe fn init_postprocessing_framebuffer(&mut self) {
         if !self.postprocessing_needed() {
-            self.postprocess_source_framebuffer = None;
             return;
         }
 
         let source_framebuffer_size = self.draw_viewport().size();
-        match self.postprocess_source_framebuffer {
-            Some(ref framebuffer)
-            if framebuffer.image().size() == source_framebuffer_size => {}
-            _ => {
-                if self.postprocess_source_framebuffer.is_some() {
-                    let existing_framebuffer = self.postprocess_source_framebuffer.take();
-                    self.device.destroy_framebuffer(existing_framebuffer);
-                }
-
-                let postprocess_texture = self.device.create_texture(pfgpu::TextureFormat::R8, source_framebuffer_size);
-                self.postprocess_source_framebuffer = Some(self.device.create_framebuffer(&self.postprocess_render_pass, postprocess_texture));
-            }
-        };
 
         let clear_params = pfgpu::ClearParams {
             color: Some(pfgeom::basic::ColorF::transparent_black()),
             ..pfgpu::ClearParams::default()
         };
 
-        self.device.clear_image(self.postprocess_source_framebuffer.unwrap().image(), clear_params);
+        // this should clear the image
+        self.device.create_postprocess_framebuffer(source_framebuffer_size, clear_params);
     }
 
     pub unsafe fn render_command(&mut self, command: &gpu_data::RenderCommand) {
@@ -256,32 +238,35 @@ impl Renderer {
     }
 
     unsafe fn draw_stencil(&self, quad_positions: &[pfgeom::basic::point::Point3DF32]) {
-        self.stencil_vertex_buffer.upload_data(&self.device, quad_positions);
-        self.bind_draw_framebuffer();
-
-        self.device
-            .bind_vertex_array(&self.stencil_vertex_array.vertex_array);
-        self.device.use_program(&self.stencil_program.program);
-        self.device.draw_arrays(
-            Primitive::TriangleFan,
-            4,
-            &RenderState {
-                // FIXME(pcwalton): Should we really write to the depth buffer?
-                depth: Some(DepthState {
-                    func: DepthFunc::Less,
-                    write: true,
-                }),
-                stencil: Some(StencilState {
-                    func: StencilFunc::Always,
-                    reference: 1,
-                    mask: 1,
-                    write: true,
-                }),
-                color_mask: false,
-                ..RenderState::default()
-            },
-        )
+        self.device.draw_stencil(quad_positions);
     }
+
+    fn add_fills(&mut self, mut fills: &[FillBatchPrimitive]) {
+        if fills.is_empty() {
+            return;
+        }
+
+        while !fills.is_empty() {
+            let count = cmp::min(fills.len(), (MAX_FILLS_PER_BATCH - self.buffered_fills.len()) as usize);
+            self.buffered_fills.extend_from_slice(&fills[0..count]);
+            fills = &fills[count..];
+            if self.buffered_fills.len() == MAX_FILLS_PER_BATCH {
+                self.draw_buffered_fills();
+            }
+        }
+    }
+
+    fn draw_buffered_fills(&mut self) {
+        if self.buffered_fills.is_empty() {
+            return;
+        }
+
+        self.device.clear_mask_framebuffer();
+        self.device.draw_buffered_fills(&self.buffered_fills);
+
+        self.buffered_fills.clear()
+    }
+
 }
 
 #[derive(Clone, Copy)]

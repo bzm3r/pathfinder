@@ -23,26 +23,98 @@ extern crate shaderc;
 extern crate winit;
 
 use hal::{Device};
-use crate::StencilFunc;
-use crate::BlendState;
-use crate::resources as pf_resources;
-use crate::pipeline_layouts;
+
+use crate::{resources, pipeline_layout_descs};
+use crate::{StencilFunc, BlendState};
+use pathfinder_geometry as pfgeom;
+
+use rustache;
 
 // TODO(pcwalton): Replace with `mem::size_of` calls?
 const FILL_INSTANCE_SIZE: u32 = 8;
 const SOLID_TILE_INSTANCE_SIZE: u32 = 6;
 const MASK_TILE_INSTANCE_SIZE: u32 = 8;
 
+unsafe fn compose_shader_module(
+    device: &<Backend as hal::Backend>::Device,
+    resources: &dyn resources::ResourceLoader,
+    name: &str,
+    shader_kind: ShaderKind,
+) -> <Backend as hal::Backend>::ShaderModule {
+    let shader_kind_char = match shader_kind {
+        ShaderKind::Vertex => 'v',
+        ShaderKind::Fragment => 'f',
+    };
+
+    let source = resources
+        .slurp(&format!("shaders/{}.{}s.glsl", name, shader_kind_char))
+        .unwrap();
+
+    let mut load_include_tile_alpha_vertex =
+        |_| load_shader_include(resources, "tile_alpha_vertex");
+    let mut load_include_tile_monochrome =
+        |_| load_shader_include(resources, "tile_monochrome");
+    let mut load_include_tile_multicolor =
+        |_| load_shader_include(resources, "tile_multicolor");
+    let mut load_include_tile_solid_vertex =
+        |_| load_shader_include(resources, "tile_solid_vertex");
+    let mut load_include_post_convolve = |_| load_shader_include(resources, "post_convolve");
+    let mut load_include_post_gamma_correct =
+        |_| load_shader_include(resources, "post_gamma_correct");
+    let template_input = rustache::HashBuilder::new()
+        .insert_lambda(
+            "include_tile_alpha_vertex",
+            &mut load_include_tile_alpha_vertex,
+        )
+        .insert_lambda("include_tile_monochrome", &mut load_include_tile_monochrome)
+        .insert_lambda("include_tile_multicolor", &mut load_include_tile_multicolor)
+        .insert_lambda(
+            "include_tile_solid_vertex",
+            &mut load_include_tile_solid_vertex,
+        )
+        .insert_lambda("include_post_convolve", &mut load_include_post_convolve)
+        .insert_lambda(
+            "include_post_gamma_correct",
+            &mut load_include_post_gamma_correct,
+        );
+
+    let mut output = std::io::Cursor::new(vec![]);
+    template_input.render(std::str::from_utf8(&source).unwrap(), &mut output).unwrap();
+    let source = output.into_inner();
+
+    let mut compiler = shaderc::Compiler::new()
+        .ok_or("shaderc not found!")
+        .unwrap();
+
+    let artifact = compiler
+        .compile_into_spirv(
+            std::str::from_utf8(&source).unwrap(),
+            match shader_kind {
+                ShaderKind::Vertex => shaderc::ShaderKind::Vertex,
+                ShaderKind::Fragment => shaderc::ShaderKind::Fragment,
+            },
+            "",
+            "main",
+            None,
+        )
+        .unwrap();
+
+    let shader_module = device.create_shader_module(artifact.as_binary_u8())
+        .unwrap();
+
+    shader_module
+}
+
 pub unsafe fn create_fill_pipeline(
-    pf_device: &crate::PfDevice,
-    pipeline_layout: pipeline_layouts::MaskPipelineLayout,
-    resources: &dyn pf_resources::ResourceLoader,
-    extent: hal::window::Extent2D,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
+    device: &<Backend as hal::Backend>::Device,
+    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
+    resources: &dyn resources::ResourceLoader,
+    size: pfgeom::basic::point::Point2DI32,
+) -> <Backend as hal::Backend>::GraphicsPipeline {
     let vertex_shader_module =
-        pf_device.compose_shader_module(resources, "fill", crate::ShaderKind::Vertex);
+        compose_shader_module(device, resources, "fill", crate::ShaderKind::Vertex);
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "fill", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "fill", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -132,12 +204,19 @@ pub unsafe fn create_fill_pipeline(
 
     let blender = generate_blend_desc(BlendState::RGBOneAlphaOne);
 
+    let mask_framebuffer_size_rect = hal::pso::Rect {
+        x: 0,
+        y: 0,
+        w: size.x() as i16,
+        h: size.y() as i16,
+    };
+    
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
-            rect: extent.to_extent().rect(),
+            rect: mask_framebuffer_size_rect,
             depth: (0.0..1.0),
         }),
-        scissor: Some(extent.to_extent().rect()),
+        scissor: Some(mask_framebuffer_size_rect),
         blend_color: None,
         depth_bounds: None,
     };
@@ -165,35 +244,29 @@ pub unsafe fn create_fill_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module); 
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline)
+    pipeline
 }
 
-pub unsafe fn create_solid_multicolor_pipeline(
-    pf_device: &crate::PfDevice,
-    resources: &dyn pf_resources::ResourceLoader,
+pub unsafe fn create_solid_tile_multicolor_pipeline(
+    device: &<Backend as hal::Backend>::Device,
+    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-    pipeline_layout: pipeline_layouts::DrawPipelineLayout,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
-    let vertex_shader_module = pf_device.compose_shader_module(
+) -> <Backend as hal::Backend>::GraphicsPipeline {
+    let vertex_shader_module = compose_shader_module(
+        device,
         resources,
         "tile_solid_multicolor",
         crate::ShaderKind::Vertex,
     );
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "tile_solid", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "tile_solid", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -274,7 +347,7 @@ pub unsafe fn create_solid_multicolor_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: hal::pso::DepthTest::Off,
         depth_bounds: false,
-        stencil: generate_stencil_test(crate::StencilFunc::Equal, 1, 1, false),
+        stencil: generate_stencil_test(StencilFunc::Equal, 1, 1, false),
     };
 
     let blender = generate_blend_desc(BlendState::Off);
@@ -310,36 +383,30 @@ pub unsafe fn create_solid_multicolor_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
+    
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-        unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
-
-    Ok(pipeline)
+    pipeline
 }
 
 
-pub unsafe fn create_solid_monochrome_pipeline(
-    pf_device: &crate::PfDevice,
-    resources: &dyn pf_resources::ResourceLoader,
+pub unsafe fn create_solid_tile_monochrome_pipeline(
+    device: &<Backend as hal::Backend>::Device,
+    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-    pipeline_layout: pipeline_layouts::DrawPipelineLayout,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
-    let vertex_shader_module = pf_device.compose_shader_module(
+) -> <Backend as hal::Backend>::GraphicsPipeline {
+    let vertex_shader_module = compose_shader_module(
+        device,
         resources,
         "tile_solid_monochrome",
         crate::ShaderKind::Vertex,
     );
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "tile_solid", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "tile_solid", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -455,35 +522,29 @@ pub unsafe fn create_solid_monochrome_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline)
+
+    pipeline
 }
 
-pub unsafe fn create_alpha_multicolor_pipeline(
-    pf_device: &crate::PfDevice,
-    pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn pf_resources::ResourceLoader,
+pub unsafe fn create_alpha_tile_multicolor_pipeline(
+    device: &<Backend as hal::Backend>::Device,
+    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
-    let vertex_shader_module = pf_device.compose_shader_module(
+) -> <Backend as hal::Backend>::GraphicsPipeline {
+    let vertex_shader_module = compose_shader_module(device, 
         resources,
         "tile_alpha_multicolor",
         crate::ShaderKind::Vertex,
     );
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "tile_alpha", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "tile_alpha", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -605,36 +666,29 @@ pub unsafe fn create_alpha_multicolor_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline_layout)
+    pipeline
 }
 
 
-pub unsafe fn create_alpha_monochrome_pipeline(
-    pf_device: &crate::PfDevice,
+pub unsafe fn create_alpha_tile_monochrome_pipeline(
+    device: &<Backend as hal::Backend>::Device,
     pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn pf_resources::ResourceLoader,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
-    let vertex_shader_module = pf_device.compose_shader_module(
+) -> <Backend as hal::Backend>::GraphicsPipeline {
+    let vertex_shader_module = compose_shader_module(device, 
         resources,
         "tile_alpha_monochrome",
         crate::ShaderKind::Vertex,
     );
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "tile_alpha", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "tile_alpha", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -756,32 +810,25 @@ pub unsafe fn create_alpha_monochrome_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline)
+    pipeline
 }
 
 pub unsafe fn create_postprocess_pipeline(
-    pf_device: &crate::PfDevice,
+    device: &<Backend as hal::Backend>::Device,
     pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn pf_resources::ResourceLoader,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
+) -> <Backend as hal::Backend>::GraphicsPipeline {
     let vertex_shader_module =
-        pf_device.compose_shader_module(resources, "post", crate::ShaderKind::Vertex);
+        compose_shader_module(device, resources, "post", crate::ShaderKind::Vertex);
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "post", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "post", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -880,33 +927,26 @@ pub unsafe fn create_postprocess_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline)
+    pipeline
 }
 
 
 pub unsafe fn create_stencil_pipeline(
-    pf_device: &crate::PfDevice,
+    device: &<Backend as hal::Backend>::Device,
     pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn pf_resources::ResourceLoader,
+    resources: &dyn resources::ResourceLoader,
     extent: hal::window::Extent2D,
-) -> Result<<Backend as hal::Backend>::GraphicsPipeline, &'static str> {
+) -> <Backend as hal::Backend>::GraphicsPipeline {
     let vertex_shader_module =
-        pf_device.compose_shader_module(resources, "stencil", crate::ShaderKind::Vertex);
+        compose_shader_module(device, resources, "stencil", crate::ShaderKind::Vertex);
     let fragment_shader_module =
-        pf_device.compose_shader_module(resources, "stencil", crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, "stencil", crate::ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -975,7 +1015,7 @@ pub unsafe fn create_stencil_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: generate_depth_test_for_stencil_shader(),
         depth_bounds: false,
-        stencil: generate_stencil_test(hal::pso::Comparison::Always, 1, 1, true),
+        stencil: generate_stencil_test(StencilFunc::Always, 1, 1, true),
     };
 
     let blender = generate_blend_desc(BlendState::Off);
@@ -1010,20 +1050,13 @@ pub unsafe fn create_stencil_pipeline(
             parent: hal::pso::BasePipeline::None,
         };
 
-        unsafe {
-            pf_device
-                .device
-                .create_graphics_pipeline(&desc, None)
-                .unwrap()
-        }
+        device.create_graphics_pipeline(&desc, None).unwrap()
     };
 
-    unsafe {
-        pf_device.device.destroy_shader_module(vertex_shader_module);
-        pf_device.device.destroy_shader_module(fragment_shader_module);
-    }
+    device.destroy_shader_module(vertex_shader_module);
+    device.destroy_shader_module(fragment_shader_module);
 
-    Ok(pipeline)
+    pipeline
 }
 
 
@@ -1199,7 +1232,7 @@ fn generate_backdrop_attribute_desc(
 }
 
 fn generate_stencil_test(
-    func: crate::StencilFunc,
+    func: StencilFunc,
     reference: u32,
     mask: u32,
     write: bool,
@@ -1213,9 +1246,9 @@ fn generate_stencil_test(
     hal::pso::StencilTest::On {
         front: hal::pso::StencilFace {
             fun: match func {
-                crate::StencilFunc::Always => hal::pso::Comparison::Always,
-                crate::StencilFunc::Equal => hal::pso::Comparison::Equal,
-                crate::StencilFunc::NotEqual => hal::pso::Comparison::NotEqual,
+                StencilFunc::Always => hal::pso::Comparison::Always,
+                StencilFunc::Equal => hal::pso::Comparison::Equal,
+                StencilFunc::NotEqual => hal::pso::Comparison::NotEqual,
             },
             mask_read: hal::pso::State::Static(mask),
             mask_write: mask_write,
@@ -1226,9 +1259,9 @@ fn generate_stencil_test(
         },
         back: hal::pso::StencilFace {
             fun: match func {
-                crate::StencilFunc::Always => hal::pso::Comparison::Always,
-                crate::StencilFunc::Equal => hal::pso::Comparison::Equal,
-                crate::StencilFunc::NotEqual => hal::pso::Comparison::NotEqual,
+                StencilFunc::Always => hal::pso::Comparison::Always,
+                StencilFunc::Equal => hal::pso::Comparison::Equal,
+                StencilFunc::NotEqual => hal::pso::Comparison::NotEqual,
             },
             mask_read: hal::pso::State::Static(mask),
             mask_write: mask_write,
@@ -1314,4 +1347,10 @@ fn generate_depth_test_for_stencil_shader() -> hal::pso::DepthTest {
         fun: hal::pso::Comparison::Less,
         write: true,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShaderKind {
+    Vertex,
+    Fragment,
 }
