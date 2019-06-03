@@ -48,35 +48,11 @@ const MAX_SOLID_TILES_PER_BATCH: u64 = 0x4000;
 const MAX_POSTPROCESS_VERTICES: usize = 1; // what should this be?
 
 pub struct Renderer {
-    pub device: pfgpu::PfDevice,
-
-    mask_render_pass: pfgpu::RenderPass,
-    postprocess_render_pass: pfgpu::RenderPass,
-
-    fill_pipeline: pfgpu::Pipeline,
-    solid_multicolor_pipeline: pfgpu::Pipeline,
-    alpha_multicolor_pipeline: pfgpu::Pipeline,
-    solid_monochrome_pipeline: pfgpu::Pipeline,
-    alpha_monochrome_pipeline: pfgpu::Pipeline,
-    solid_monochrome_tile_vertex_buffer: SolidTileVertexBuffer,
-    alpha_monochrome_tile_vertex_buffer: AlphaTileVertexBuffer,
-    solid_multicolor_tile_vertex_buffer: SolidTileVertexBuffer,
-    alpha_multicolor_tile_vertex_buffer: AlphaTileVertexBuffer,
+    pub gpu_state: pfgpu::GpuState,
 
     area_lut_texture: pfgpu::Image,
-    quad_vertex_positions_buffer: pfgpu::Buffer,
-    fill_vertex_buffer: pfgpu::Buffer,
-    fill_colors_texture: pfgpu::Image,
-
     // Postprocessing shader
-    postprocess_source_framebuffer: Option<pfgpu::Framebuffer>,
-    postprocess_pipeline: pfgpu::Pipeline,
-    postprocess_vertex_buffer: pfgpu::Buffer,
     gamma_lut_texture: pfgpu::Image,
-
-    // Stencil shader
-    stencil_pipeline: pfgpu::Pipeline,
-    stencil_vertex_buffer: pfgpu::Buffer,
 
     // Rendering state
     mask_framebuffer_cleared: bool,
@@ -94,77 +70,20 @@ impl Renderer {
         instance_name: &str,
         resources: &dyn pfresources::ResourceLoader,
     ) -> Renderer {
-        let mut device = pfgpu::PfDevice::new(window, instance_name, crate::render_passes::mask_render_pass_desc(), crate::render_passes::create_draw_pass_desc(), crate::render_passes::postprocess_pass_desc());
-
-        let mask_render_pass = pfgpu::create_render_pass(crate::render_passes::create_mask_pass_desc());
-        let postprocess_render_pass = pfgpu::create_render_pass(crate::render_passes::create_postprocess_pass_desc());
-
-        let fill_pipeline = ;
-        let solid_multicolor_pipeline = SolidMulticolorPipeline::new(&device, resources);
-        let alpha_multicolor_pipeline = AlphaMulticolorPipeline::new(&device, resources);
-        let solid_monochrome_pipeline = SolidTileMonochromePipeline::new(&device, resources);
-        let alpha_monochrome_pipeline = AlphaTileMonochromePipeline::new(&device, resources);
-        let postprocess_pipeline = PostprocessPipeline::new(&device, resources);
-        let stencil_pipeline = StencilProgram::new(&device, resources);
-        //let reprojection_pipeline = ReprojectionProgram::new(&device, resources);
-
         let area_lut_texture = device.create_texture_from_png(resources, "area-lut");
         let gamma_lut_texture = device.create_texture_from_png(resources, "gamma-lut");
 
         let quad_vertex_positions_buffer = device.create_vertex_buffer(QUAD_VERTEX_POSITIONS.len() as u64);
         device.upload_data(quad_vertex_positions_buffer, &QUAD_VERTEX_POSITIONS);
 
-        let fill_vertex_buffer = FillVertexBuffer::new(&device, MAX_FILLS_PER_BATCH);
-        let alpha_multicolor_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_TILES_PER_BATCH);
-        let solid_multicolor_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
-        let alpha_monochrome_tile_vertex_buffer = AlphaTileVertexBuffer::new(&device, MAX_ALPHA_TILES_PER_BATCH);
-        let solid_monochrome_tile_vertex_buffer = SolidTileVertexBuffer::new(&device, MAX_SOLID_TILES_PER_BATCH);
-        let postprocess_vertex_buffer = PostprocessVertexBuffer::new(&device, MAX_POSTPROCESS_VERTICES);
-        let stencil_vertex_buffer = StencilVertexBuffer::new(&device, QUAD_VERTEX_POSITIONS.len() as u64);
-        //let reprojection_vertex_buffer = ReprojectionVertexBuffer::new(&device, MAX_REPROJECTION_VERTICES);
-
-
-        let fill_colors_size =
-            pfgeom::basic::point::Point2DI32::new(FILL_COLORS_TEXTURE_WIDTH, FILL_COLORS_TEXTURE_HEIGHT);
-        let fill_colors_texture = device.create_texture(hal::format::Format::Rgba8Srgb, fill_colors_size);
-
         Renderer {
-            device,
-
-            mask_render_pass,
-            postprocess_render_pass,
-
-            fill_pipeline,
-            solid_monochrome_pipeline,
-            alpha_monochrome_pipeline,
-            solid_multicolor_pipeline,
-            alpha_multicolor_pipeline,
-            solid_monochrome_tile_vertex_buffer,
-            alpha_monochrome_tile_vertex_buffer,
-            solid_multicolor_tile_vertex_buffer,
-            alpha_multicolor_tile_vertex_buffer,
+            gpu_state,
             area_lut_texture,
-            quad_vertex_positions_buffer,
-            fill_vertex_buffer,
-            mask_framebuffer,
-            fill_colors_texture,
-
-            postprocess_source_framebuffer: None,
-            postprocess_pipeline,
-            postprocess_vertex_buffer,
             gamma_lut_texture,
-
-            stencil_pipeline,
-            stencil_vertex_buffer,
-
-            //reprojection_pipeline,
-            //reprojection_vertex_buffer,
-
             mask_framebuffer_cleared: false,
             buffered_fills: vec![],
             buffered_alpha_tiles: vec![],
             buffered_solid_tiles: vec![],
-
             use_depth: false,
         }
     }

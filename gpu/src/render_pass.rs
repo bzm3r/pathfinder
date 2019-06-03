@@ -1,4 +1,4 @@
-// pathfinder/renderer/src/gpu/mod.rs
+// pathfinder/gpu/src/lib.rs
 //
 // Copyright © 2019 The Pathfinder Project Developers.
 //
@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! The GPU renderer for Pathfinder 3.
+extern crate gfx_hal as hal;
 
-pub mod renderer;
-pub mod render_pass_descriptions;
-pub mod pipeline_dsl_bindings;
-pub mod pipeline_descriptions;
+pub struct RenderPassDesc {
+    attachments: Vec<hal::pass::Attachment>,
+    subpass_colors: Vec<hal::pass::AttachmentRef>,
+    subpass_inputs: Vec<hal::pass::AttachmentRef>,
+}

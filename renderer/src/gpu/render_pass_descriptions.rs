@@ -9,9 +9,14 @@
 // except according to those terms.
 
 extern crate gfx_hal as hal;
-use pathfinder_gpu as pfgpu;
 
-pub fn create_mask_pass_desc() -> pfgpu::RenderPassDesc {
+pub struct RenderPassDesc {
+    attachments: Vec<hal::pass::Attachment>,
+    subpass_colors: Vec<hal::pass::AttachmentRef>,
+    subpass_inputs: Vec<hal::pass::AttachmentRef>,
+}
+
+pub fn create_fill_render_pass_desc() -> RenderPassDesc {
     let mask_texture = hal::pass::Attachment {
         format: Some(hal::format::Format::R16Sfloat),
         samples: 0,
@@ -23,14 +28,14 @@ pub fn create_mask_pass_desc() -> pfgpu::RenderPassDesc {
         layouts: hal::image::Layout::Undefined..hal::image::Layout::ShaderReadOnlyOptimal,
     };
 
-    pfgpu::RenderPassDesc {
+    RenderPassDesc {
         attachments: vec![mask_texture],
         subpass_colors: vec![(0, hal::image::Layout::ColorAttachmentOptimal)],
         subpass_inputs: vec![],
     }
 }
 
-pub fn create_draw_pass_desc() -> pfgpu::RenderPassDesc {
+pub fn create_draw_pass_desc() -> RenderPassDesc {
     let mask_texture = hal::pass::Attachment {
         format: Some(hal::format::Format::R16Sfloat),
         samples: 0,
@@ -53,14 +58,14 @@ pub fn create_draw_pass_desc() -> pfgpu::RenderPassDesc {
         layouts: hal::image::Layout::Undefined..hal::image::Layout::ColorAttachmentOptimal,
     };
 
-    pfgpu::RenderPassDesc {
+    RenderPassDesc {
         attachments: vec![dest],
         subpass_colors: vec![(1, hal::image::Layout::ColorAttachmentOptimal)],
         subpass_inputs: vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],
     }
 }
 
-pub fn create_postprocess_pass_desc() -> pfgpu::RenderPassDesc {
+pub fn create_postprocess_pass_desc() -> RenderPassDesc {
     let dest = hal::pass::Attachment {
         format: Some(hal::format::Format::Rgba8Srgb),
         samples: 0,
@@ -72,9 +77,11 @@ pub fn create_postprocess_pass_desc() -> pfgpu::RenderPassDesc {
         layouts: hal::image::Layout::Undefined..hal::image::Layout::ColorAttachmentOptimal,
     };
 
-    pfgpu::RenderPassDesc {
+    RenderPassDesc {
         attachments: vec![dest],
         subpass_colors: vec![(0, hal::image::Layout::ColorAttachmentOptimal)],
         subpass_inputs: vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],
     }
 }
+
+

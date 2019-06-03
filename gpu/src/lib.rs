@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Minimal abstractions over GPU device capabilities.
 #[cfg(feature = "dx12")]
 extern crate gfx_backend_dx12 as back;
 #[cfg(feature = "metal")]
@@ -32,653 +31,13 @@ use rustache::HashBuilder;
 use rustache::Render;
 
 pub mod resources;
-pub mod pipeline_layout_descs;
-pub mod pipelines;
-pub mod render_pass_descs;
-
-struct IndirectDrawData {
-    vertex_count: u32,
-    instance_count: u32,
-    first_vertex: u32,
-    first_instance: u32,
-}
-
-pub trait FillData {
-}
-
-pub trait AlphaTileData {
-}
-
-pub trait SolidTileData {
-}
-
-pub struct FillRenderer<'a> {
-    device: &'a <Backend as hal::Backend>::Backend,
-    pipeline: <Backend as hal::Backend>::Pipeline,
-    pipeline_layout_state: &'a PipelineLayoutState,
-    command_queue: &'a <Backend as hal::Backend>::CommandQueue,
-    quad_positions_vertex_buffer: &'a Buffer,
-    framebuffer: &'a Framebuffer,
-    cleared: bool,
-    clear_fence: <Backend as hal::Backend>::Fence,
-    clear_image_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    fill_fence: <Backend as hal::Backend>::Fence,
-    fill_semaphore: <Backend as hal::Backend>::Semaphore,
-    fill_vertex_buffer: Buffer,
-    indirect_draw_buffer: Buffer,
-    fill_command_buffer: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-}
-
-impl<'a> FillRenderer<'a> {
-    unsafe fn new(adapter: &hal::Adapter<Backend>,
-                  device: &'a <Backend as hal::Backend>::Device,
-                  pipeline_layout_state: &'a PipelineLayoutState,
-                  resources: &dyn resources::ResourceLoader,
-                  command_queue: &<Backend as hal::Backend>::CommandQueue,
-                  command_pool: &<Backend as hal::Backend>::CommandPool,
-                  quad_vertex_positions_buffer: &'a Buffer,
-                  mask_framebuffer_size: pfgeom::basic::point::Point2DI32,
-                  max_fill_vertex_buffer_size: u64) -> FillRenderer<'a>
-    {
-        let framebuffer = Framebuffer::new(adapter, device, hal::format::Format::R16Sfloat, mask_framebuffer_size, pipeline_layout_state.render_pass());
-
-        let cleared = false;
-        let clear_fence = device.create_fence().unwrap();
-        clear_fence.reset().unwrap();
-
-        let clear_image_command = FillRenderer::create_clear_image_command_buffer(device, command_pool, clear_params);
-
-        let fill_fence = device.create_fence().unwrap();
-        fill_fence.reset_fence().unwrap();
-        let fill_semaphore = device.create_semaphore().unwrap();
-
-        let fill_vertex_buffer = Buffer::new(adapter, device, max_fill_vertex_buffer_size, hal::buffer::Usage::VERTEX);
-        let indirect_draw_buffer = Buffer::new(adapter, device, std::mem::size_of::<IndirectDrawData>() as u64, hal::buffer::Usage::INDIRECT);
-
-        let fill_command_buffer = FillRenderer::create_fill_command_buffer(device, command_pool, viewport);
-
-        let pipeline = pipelines::create_fill_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, mask_framebuffer_size);
-
-        FillRenderer {
-            device,
-            pipeline,
-            pipeline_layout_state,
-            command_queue,
-            quad_positions_vertex_buffer,
-            framebuffer,
-            cleared,
-            clear_fence,
-            clear_image_command,
-            fill_fence,
-            fill_semaphore,
-            indirect_draw_buffer,
-            fill_vertex_buffer,
-            fill_command_buffer,
-        }
-    }
-
-    fn framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
-        &self.framebuffer.unwrap().framebuffer()
-    }
-
-    fn create_clear_image_command_buffer(&self, command_pool: &<Backend as hal::Backend>::CommandPool, clear_params: ClearParams) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        let clear_color: [f32;4] = {
-            match clear_params.color {
-                Some(color) => color.to_rgba_array(),
-                _ => {
-                    let color = pfgeom::color::ColorF::transparent_black();
-                    color.to_rgba_array()
-                }
-            }
-        };
-
-        let depth_stencil: hal::command::ClearDepthStencil = {
-            let depth = clear_params.depth.unwrap_or(0.0);
-            let stencil = clear_params.stencil.unwrap_or(0) as u32;
-
-            hal::command::ClearDepthStencil(depth, stencil)
-        };
-
-        cmd_buffer.clear_image(self.framebuffer.image(), hal::image::Layout::ColorAttachmentOptimal, clear_color, depth_stencil);
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn create_fill_command_buffer(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.bind_graphics_pipeline(self.pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.indirect_draw_buffer.buffer()), (self.fill_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.render_pass,
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw_indirect(&self.indirect_command_buffer(), 0, 1, 0);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn submit_clear_image_command(&self, render_complete_semaphore: &<Backend as hal::Backend>::Semaphore) {
-        let submission = hal::queue::Submission {
-            command_buffers: [&self.clear_image_command],
-            wait_semaphores: [(render_complete_semaphore, hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT)],
-            signal_semaphores: [&self.clear_complete_semaphore],
-        };
-        self.command_queue.submit(submission, &self.clear_complete_fence);
-    }
-
-    unsafe fn upload_to_fill_vertex_buffer<T>(&self, data: &[T], indirect_draw_data: IndirectDrawData) where T: FillData {
-        self.indirect_draw_buffer.upload_data(self.device, indirect_draw_data);
-        self.fill_vertex_buffer.upload_data(self.device, data);
-    }
-
-    unsafe fn submit_fill_command(&self) {
-        self.indirect_draw_buffer.upload_data(self.device, indirect_draw_command);
-
-        let submission = hal::queue::Submission {
-            command_buffers: [&self.fill_command_buffer],
-            wait_semaphores: [(&self.clear_complete_semaphore, hal::pso::PiplineStage::COLOR_ATTACHMENT_OUTPUT)],
-            signal_semaphores: [&self.fill_drawing_complete_semaphore],
-        };
-        self.command_queue.submit(submission, &self.fill_drawing_complete_fence);
-    }
-
-    pub unsafe fn draw_fills<T>(&self, data: &[T], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) where T: FillData {
-        let indirect_draw_data = IndirectDrawData {
-            vertex_count,
-            instance_count,
-            first_vertex,
-            first_instance,
-        };
-
-        self.upload_to_fill_vertex_buffer(data, indirect_draw_data);
-        self.submit_fill_command();
-    }
-
-    pub fn reset_viewport(&self, viewport: hal::pso::Viewport) {
-        self.fill_max_command.set_viewport(0, &[viewport.clone()]);
-    }
-
-    pub unsafe fn destroy_fill_renderer(device: &<Backend as hal::Backend>::Device, fill_renderer: FillRenderer) {
-        let FillRenderer { clear_fence: cf, fill_fence: ff, fill_semaphore: fs, indirect_draw_buffer: idb, fill_vertex_buffer: fvb, .. } = fill_renderer;
-
-        for f in [cf, ff] {
-            device.destroy_fence(f);
-        }
-
-        device.destroy_semaphore(fs);
-
-        Buffer::destroy_buffer(device, idb);
-        Buffer::destroy_buffer(device, fvb);
-    }
-}
-
-pub struct DrawRenderer<'a> {
-    device: &'a <Backend as hal::Backend>::Backend,
-    solid_tile_multicolor_pipeline: <Backend as hal::Backend>::Pipeline,
-    solid_tile_monochrome_pipeline: <Backend as hal::Backend>::Pipeline,
-    alpha_tile_multicolor_pipeline: <Backend as hal::Backend>::Pipeline,
-    alpha_tile_monochrome_pipeline: <Backend as hal::Backend>::Pipeline,
-    stencil_pipeline: <Backend as hal::Backend>::Pipeline,
-    postprocess_pipeline: <Backend as hal::Backend>::Pipeline,
-    pipeline_layout_state: &'a PipelineLayoutState,
-    command_queue: &'a <Backend as hal::Backend>::CommandQueue,
-    quad_positions_vertex_buffer: &'a Buffer,
-    swapchain_state: SwapchainState,
-    draw_solid_tiles_monochrome_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    draw_solid_tiles_multicolor_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    draw_alpha_tiles_monochrome_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    draw_alpha_tiles_multicolor_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    stencil_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    postprocess_command: hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>,
-    solid_tile_indirect_draw_buffer: Buffer,
-    alpha_tile_indirect_draw_buffer: Buffer,
-    solid_tile_vertex_buffer: Buffer,
-    alpha_tile_vertex_buffer: Buffer,
-    stencil_vertex_buffer: Buffer,
-    monochrome: bool,
-}
-
-impl<'a> DrawRenderer<'a> {
-    unsafe fn new(adapter: &hal::Adapter<Backend>,
-                  device: &'a <Backend as hal::Backend>::Device,
-                  pipeline_layout_state: &'a PipelineLayoutState,
-                  resources: &dyn resources::ResourceLoader,
-                  extent: hal::window::Extent2D,
-                  command_queue: &<Backend as hal::Backend>::CommandQueue,
-                  command_pool: &<Backend as hal::Backend>::CommandPool,
-                  frame_buffer: &'a Framebuffer,
-                  quad_vertex_positions_buffer: &'a Buffer,
-                  max_tile_buffer_size: u64,
-                  monochrome: bool) -> DrawRenderer<'a>
-    {
-        let solid_tile_multicolor_pipeline = pipelines::create_solid_tile_multicolor_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        let solid_tile_monochrome_pipeline = pipelines::create_solid_tile_monochrome_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        let alpha_tile_multicolor_pipeline = pipelines::create_alpha_tile_multicolor_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        let alpha_tile_monochrome_pipeline = pipelines::create_solid_tile_monochrome_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        let stencil_pipeline = pipelines::create_stencil_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-        let postprocess_pipeline = pipelines::create_postprocess_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, extent);
-
-        DrawRenderer {
-            device,
-            solid_tile_multicolor_pipeline,
-            solid_tile_monochrome_pipeline,
-            alpha_tile_multicolor_pipeline,
-            alpha_tile_monochrome_pipeline,
-            stencil_pipeline,
-            postprocess_pipeline,
-            pipeline_layout_state,
-            command_queue,
-            quad_positions_vertex_buffer,
-            swapchain_state,
-            draw_solid_tiles_monochrome_command,
-            draw_solid_tiles_multicolor_command,
-            draw_alpha_tiles_monochrome_command,
-            draw_alpha_tiles_multicolor_command,
-            stencil_command,
-            postprocess_command,
-            solid_tile_indirect_draw_buffer,
-            alpha_tile_indirect_draw_buffer,
-            solid_tile_vertex_buffer,
-            alpha_tile_vertex_buffer,
-            stencil_vertex_buffer,
-            monochrome,
-        }
-    }
-
-    unsafe fn framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
-        self.swapchain_state.get_framebuffer()
-    }
-
-    unsafe fn create_solid_tile_monochrome_command(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.solid_tile_monochrome_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.solid_tile_indirect_draw_buffer.buffer()), (self.solid_tile_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw_indirect(&self.indirect_command_buffer(), 0, 1, 0);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn create_solid_tile_multicolor_command(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.solid_tile_multicolor_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.solid_tile_indirect_draw_buffer.buffer()), (self.solid_tile_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw_indirect(&self.indirect_command_buffer(), 0, 1, 0);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn create_alpha_tile_monochrome_command(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.alpha_tile_monochrome_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.alpha_tile_indirect_draw_buffer.buffer()), (self.alpha_tile_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw_indirect(&self.indirect_command_buffer(), 0, 1, 0);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn create_alpha_tile_multicolor_command(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.alpha_tile_multicolor_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.alpha_tile_indirect_draw_buffer.buffer()), (self.alpha_tile_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw_indirect(&self.indirect_command_buffer(), 0, 1, 0);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn create_stencil_command(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.stencil_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.stencil_vertex_buffer.buffer(), 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw(0..4, 0..1);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn postprocess_pipeline(&self, command_pool: &<Backend as hal::Backend>::CommandPool, viewport: hal::pso::Viewport) -> hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-
-        let allow_pending_resubmit = false;
-        cmd_buffer.begin(allow_pending_resubmit);
-
-        cmd_buffer.set_viewports(0, &[viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(self.postprocess_pipeline);
-        cmd_buffer.bind_vertex_buffers(0, [(self.quad_positions_vertex_buffer, 0)]);
-        cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, Some(self.pipeline_layout_state.descriptor_set_layout()), &[]);
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.pipeline_layout_state.render_pass(),
-                self.framebuffer(),
-                viewport.rect,
-                &[],
-            );
-            encoder.draw(0..4, 0..1);
-        }
-
-        cmd_buffer.finish();
-
-        cmd_buffer
-    }
-
-    unsafe fn upload_to_solid_tile_vertex_buffer<T>(&self, data: &[T], indirect_draw_data: IndirectDrawData) where T: SolidTileData {
-        self.indirect_draw_buffer.upload_data(self.device, indirect_draw_data);
-        self.solid_tile_vertex_buffer.upload_data(self.device, data);
-    }
-
-    unsafe fn upload_to_alpha_tile_vertex_buffer<T>(&self, data: &[T], indirect_draw_data: IndirectDrawData) where T: AlphaTileData {
-        self.indirect_draw_buffer.upload_data(self.device, indirect_draw_data);
-        self.alpha_tile_vertex_buffer.upload_data(self.device, data);
-    }
-
-    unsafe fn upload_to_stencil_vertex_buffer(&self, data: &[T])  {
-        self.indirect_draw_buffer.upload_data(self.device, indirect_draw_data);
-        self.alpha_tile_vertex_buffer.upload_data(self.device, data);
-    }
-
-    unsafe fn draw_solid_tile_command(&self) -> &hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        if self.monochrome {
-            &self.draw_solid_tiles_monochrome_command
-        } else {
-            &self.draw_solid_tiles_multicolor_command
-        }
-    }
-
-    unsafe fn draw_alpha_tile_command(&self) -> &hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary> {
-        if self.monochrome {
-            &self.draw_alpha_tiles_monochrome_command
-        } else {
-            &self.draw_alpha_tiles_multicolor_command
-        }
-    }
-
-    unsafe fn submit_solid_tile_command(&self) {
-        let submission = hal::queue::Submission {
-            command_buffers: [self.draw_solid_tile_command()],
-            wait_semaphores: None,
-            signal_semaphores: None,
-        };
-        self.command_queue.submit(submission, &self.solid_tile_render_finished_fence);
-    }
-
-    unsafe fn submit_alpha_tile_command(&self) {
-        let submission = hal::queue::Submission {
-            command_buffers: [self.draw_alpha_tile_command()],
-            wait_semaphores: None,
-            signal_semaphores: None,
-        };
-
-        self.command_queue.submit(submission, &self.alpha_tile_render_finished_fence);
-    }
-
-    pub unsafe fn draw_solid_tiles<T>(&self, data: &[T], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) where T: SolidTileData {
-        let indirect_draw_data = IndirectDrawData {
-            vertex_count,
-            instance_count,
-            first_vertex,
-            first_instance,
-        };
-
-        self.upload_to_solid_tile_vertex_buffer(data, indirect_draw_data);
-        self.submit_solid_tile_command();
-    }
-
-    pub unsafe fn draw_alpha_tiles<T>(&self, data: &[T], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) where T: SolidTileData {
-        let indirect_draw_data = IndirectDrawData {
-            vertex_count,
-            instance_count,
-            first_vertex,
-            first_instance,
-        };
-
-        self.upload_to_solid_tile_vertex_buffer(data, indirect_draw_data);
-        self.submit_solid_tile_command();
-    }
-
-    pub fn reset_viewport(&self, viewport: hal::pso::Viewport) {
-        self.draw_solid_tiles_monochrome_command.set_viewport(0, &[viewport.clone()]);
-        self.draw_solid_tiles_multicolor_command.set_viewport(0, &[viewport.clone()]);
-        self.draw_alpha_tiles_monochrome_command.set_viewport(0, &[viewport.clone()]);
-        self.draw_alpha_tiles_multicolor_command.set_viewport(0, &[viewport.clone()]);
-        self.stencil_command.set_viewport(0, &[viewport.clone()]);
-        self.postprocess_command.set_viewport(0, &[viewport.clone()]);
-    }
-
-    pub unsafe fn destroy_draw_renderer(device: &<Backend as hal::Backend>::Device, draw_renderer: DrawRenderer) {
-        let FillRenderer { clear_fence: cf, fill_fence: ff, fill_semaphore: fs, indirect_draw_buffer: idb, fill_vertex_buffer: fvb, .. } = fill_renderer;
-
-        for f in [cf, ff] {
-            device.destroy_fence(f);
-        }
-
-        device.destroy_semaphore(fs);
-
-        Buffer::destroy_buffer(device, idb);
-        Buffer::destroy_buffer(device, fvb);
-    }
-}
-
-pub struct SwapchainState {
-    max_frames_in_flight: usize,
-    swapchain_image_format: hal::format::Format,
-    swapchain_framebuffers: Vec<Framebuffer>,
-    swapchain: <Backend as hal::Backend>::Swapchain,
-    image_available_semaphores: Vec<<Backend as hal::Backend>::Semaphore>,
-    render_finished_semaphores: Vec<<Backend as hal::Backend>::Semaphore>,
-    submission_command_buffers: Vec<hal::command::CommandBuffer<Backend, hal::Graphics, hal::command::MultiShot, hal::command::Primary>>,
-    current_index: usize,
-}
-
-impl SwapchainState {
-    pub unsafe fn new(adapter: &mut hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, surface: &mut <Backend as hal::Backend>::Surface, draw_render_pass: &<Backend as hal::Backend>::RenerPass, max_frames_in_flight: usize, command_pool: &<Backend as hal::Backend>::CommandPool) -> SwapchainState {
-        let (capabilities, compatible_formats, _compatible_present_modes) =
-            surface.compatibility(&mut adapter.physical_device);
-
-        let swapchain_image_format = match compatible_formats {
-            None => hal::format::Format::Rgba8Srgb,
-            Some(formats) => match formats
-                .iter()
-                .find(|format| format.base_format().1 == hal::format::ChannelType::Srgb)
-                .cloned()
-                {
-                    Some(srgb_format) => srgb_format,
-                    None => formats
-                        .get(0)
-                        .cloned()
-                        .ok_or("Surface does not support any known format.")
-                        .unwrap(),
-                },
-        };
-
-        let extent = {
-            let window_client_area = window
-                .get_inner_size()
-                .unwrap()
-                .to_physical(window.get_hidpi_factor());
-
-            hal::window::Extent2D {
-                width: capabilities.extents.end.width.min(window_client_area.width as u32),
-                height: capabilities
-                    .extents
-                    .end
-                    .height
-                    .min(window_client_area.height as u32),
-            }
-        };
-
-        let swapchain_config = hal::window::SwapchainConfig::from_caps(&capabilities, draw_image_format, extent);
-
-        let (swapchain, swapchain_images) = device
-            .create_swapchain(surface, swapchain_config, previous_swapchain)
-            .unwrap();
-
-
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            PfDevice::create_synchronizers(&device, max_frames_in_flight);
-
-        let mut swapchain_framebuffers: Vec<Framebuffer> = Vec::new();
-
-        for image_view in swapchain_image_views.iter() {
-            swapchain_framebuffers.push(Framebuffer::new(adapter, device, swapchain_format, pfgeom::basic::point::Point2DI32::new(extent.width as i32, extent.height as i32), draw_render_pass));
-        }
-
-        let image_available_semaphores: Vec<<Backend as hal::Backend>::Semaphore> = (0..max_frames_in_flight).into_iter().map(|_| device.create_semaphore().unwrap()).collect();
-        let render_finished_semaphores: Vec<<Backend as hal::Backend>::Semaphore> = (0..max_frames_in_flight).into_iter().map(|_| device.create_semaphore().unwrap()).collect();
-
-        let submission_command_buffers: Vec<_> = swapchain_framebuffers
-            .iter()
-            .map(|_| command_pool.acquire_command_buffer())
-            .collect();
-
-        SwapchainState {
-            max_frames_in_flight,
-            swapchain_image_format,
-            swapchain_framebuffers,
-            swapchain,
-            image_available_semaphores,
-            render_finished_semaphores,
-            submission_command_buffers,
-            current_index: 0,
-        }
-    }
-
-    pub unsafe fn get_framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
-        self.swapchain_framebuffers[self.current_index].framebuffer()
-    }
-
-    pub unsafe fn recreate_swapchain(&self) {
-        unimplemented!();
-    }
-
-    pub unsafe fn destroy_swapchain_state(device: &<Backend as hal::Backend>::Device, swapchain_state: SwapchainState) {
-        let SwapchainState { swapchain_framebuffers: sfbs, swapchain: sc, image_available_semaphores: ias, render_finished_semaphores: rfs} = swapchain_state;
-
-        for s in ias.into_iter() {
-            device.destroy_semaphore(s);
-        }
-
-        for s in rfs.into_iter() {
-            device.destroy_semaphore(s);
-        }
-
-        for fb in sfbs.into_iter() {
-            Framebuffer::destroy_framebuffer(device, fb);
-        }
-
-        device.destroy_swapchain(sc);
-    }
-}
-
-pub struct PfDevice<'a> {
+mod pipeline_layout;
+mod pipeline;
+mod render_pass;
+mod pipeline_state;
+mod gpu_data;
+
+pub struct GpuState<'a> {
     instance: back::Instance,
     surface: <Backend as hal::Backend>::Surface,
     pub device: <Backend as hal::Backend>::Device,
@@ -688,50 +47,50 @@ pub struct PfDevice<'a> {
 
     command_pool: hal::CommandPool<Backend, hal::Graphics>,
 
-    fill_pipeline_layout: PipelineLayoutState,
-    draw_pipeline_layout: PipelineLayoutState,
-    postprocess_pipeline_layout: PipelineLayoutState,
-
-    fill_renderer: FillRenderer<'a>,
-    tile_renderer: TileRenderer<'a>,
+    fill_renderer: crate::pipeline_state::FillPipelineState<'a>,
+    draw_renderer: crate::pipeline_state::DrawRenderer<'a>,
 }
 
-impl<'a> PfDevice<'a> {
+impl<'a> GpuState<'a> {
     pub unsafe fn new(window: &winit::Window, 
-                      instance_name: &str, 
-                      fill_render_pass_desc: RenderPassDesc, 
-                      draw_render_pass_desc: RenderPassDesc, 
-                      postprocess_render_pass_desc: RenderPassDesc, 
+                      instance_name: &str,
                       fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, 
                       draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, 
-                      postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>
-                      mask_framebuffer_size: pfgeom::basic::point::Point2DI32,
+                      postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+                      fill_pipeline_description: crate::pipeline::PipelineDescription,
+                      tile_solid_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+                      tile_solid_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+                      tile_alpha_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+                      tile_alpha_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+                      postprocess_pipeline_description: crate::pipeline::PipelineDescription,
+                      stencil_pipeline_description: crate::pipeline::PipelineDescription,
+                      fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
                       max_quad_vertex_positions_buffer_size: usize,
                       max_fill_vertex_buffer_size: usize,
                       max_solid_tile_vertex_buffer_size: usize,
-                      mask_alpha_tile_vertex_buffer_size: usize) -> PfDevice {
+                      mask_alpha_tile_vertex_buffer_size: usize) -> GpuState {
+
         let instance = back::Instance::create(instance_name, 1);
 
         let mut surface = instance.create_surface(window);
 
-        let mut adapter = PfDevice::pick_adapter(&instance, &surface).unwrap();
+        let mut adapter = GpuState::pick_adapter(&instance, &surface).unwrap();
 
         let (device, queue_group) =
-            PfDevice::create_device_with_graphics_queues(&mut adapter, &surface);
+            GpuState::create_device_with_graphics_queues(&mut adapter, &surface);
 
-        let fill_render_pass = PfDevice::create_render_pass(&device, fill_render_pass_desc);
-        let draw_render_pass = PfDevice::create_render_pass(&device, draw_render_pass_desc);
-        let postprocess_render_pass = PfDevice::create_render_pass(&device, postprocess_render_pass_desc);
 
-        let max_frames_in_flight = 1;
-        let swapchain_state= SwapchainState::new(&mut adapter, &device, &surface, &draw_render_pass, max_frames_in_flight, &command_pool);
-        let in_flight_fences = (0..max_frames_in_flight).into_iter().map(|_| device.create_fence().unwrap()).collect();
-        
-        let fill_pipeline_layout = PipelineLayoutState::new(&device, fill_descriptor_set_layout_bindings, fill_render_pass);
+        let draw_render_pass = GpuState::create_render_pass(&device, draw_render_pass_desc);
+        let postprocess_render_pass = GpuState::create_render_pass(&device, postprocess_render_pass_desc);
+
+        let swapchain_state= crate::pipeline_state::DrawPipelineState::new(&mut adapter, &device, &surface, &draw_render_pass, max_frames_in_flight, &command_pool);
+        let max_frames_in_flight = swapchain_state.max_frames_in_flight();
+
+        let in_flight_draw_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
+        let in_flight_fill_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
+
         let draw_pipeline_layout = PipelineLayoutState::new(&device, draw_descriptor_set_layout_bindings, draw_render_pass);
         let postprocess_pipeline_layout = PipelineLayoutState::new(&device, postprocess_descriptor_set_layout_bindings, postprocess_render_pass);
-
-        let mask_framebuffer = Framebuffer::new(&adapter, &device, hal::format::Format::R16Sfloat, mask_framebuffer_size, &draw_render_pass);
 
         let mut command_pool = device
             .create_command_pool_typed(
@@ -740,23 +99,10 @@ impl<'a> PfDevice<'a> {
             )
             .unwrap();
 
-        adapter: &hal::Adapter<Backend>,
-        device: &'a <Backend as hal::Backend>::Device,
-        pipeline: &'a <Backend as hal::Backend>::Pipeline,
-        pipeline_layout_state: &'a PipelineLayoutState,
-        command_queue: &<Backend as hal::Backend>::CommandQueue,
-        command_pool: &<Backend as hal::Backend>::CommandPool,
-        frame_buffer: &'a Framebuffer,
-        quad_vertex_positions_buffer: &'a Buffer,
-        max_fill_vertex_buffer_size: u64
+        let fill_renderer = crate::pipeline_state::FillPipelineState::new(&adapter, &device, &fill_pipeline_layout, resources, &command_queue, &command_pool, &quad_vertex_positions_buffer, fill_framebuffer_size, max_fill_vertex_buffer_size as u64, &in_flight_fill_fences, swapchain_state.current_index_ref());
+        let draw_renderer = crate::pipeline_state::DrawRenderer::new(&adapter, &device, &draw_pipeline_layout, resources, extent, &command_queue, &command_pool, &quad_vertex_positions_buffer, max_tile_vertex_buffer_size, monochrome);
 
-        pf_device: &crate::PfDevice,
-        pipeline_layout: pipeline_layouts::MaskPipelineLayout,
-        resources: &dyn pf_resources::ResourceLoader,
-        extent: hal::window::Extent2D
-        let fill_renderer = FillRenderer::new(&adapter, &device, pipelines::create_fill_pipeline());
-
-        PfDevice {
+        GpuState {
             instance,
             surface,
             device,
@@ -766,25 +112,9 @@ impl<'a> PfDevice<'a> {
 
             command_pool,
 
-            fill_pipeline_layout,
-            draw_pipeline_layout,
-            postprocess_pipeline_layout,
-
             fill_renderer,
             draw_renderer,
         }
-    }
-
-    pub unsafe fn create_render_pass(device: &<Backend as hal::Backend>::Device, render_pass_desc: RenderPassDesc) -> <Backend as hal::Backend>::RenderPass {
-        let subpass = hal::pass::SubpassDesc {
-            colors: &render_pass_desc.subpass_colors,
-            inputs: &render_pass_desc.subpass_inputs,
-            depth_stencil: None,
-            resolves: &[],
-            preserves: &[],
-        };
-
-        device.create_render_pass(&render_pass_desc.attachments, &[subpass], &[]).unwrap()
     }
 
     fn pick_adapter(
@@ -986,10 +316,6 @@ impl<'a> PfDevice<'a> {
         }
     }
 
-    pub unsafe fn create_vertex_buffer(&self, size: u64) -> Buffer {
-        Buffer::new(&self.adapter, &self.device, size, hal::buffer::Usage::VERTEX)
-    }
-
     pub unsafe fn create_texture_from_png(&mut self, resources: &dyn ResourceLoader, name: &str)  -> Image {
         let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
         let image = img_crate::load_from_memory_with_format(&data, img_crate::ImageFormat::PNG).unwrap().to_luma();
@@ -1126,16 +452,23 @@ impl UniformData {
     }
 }
 
-pub struct Buffer {
-    usage: hal::buffer::Usage,
-    buffer: <Backend as hal::Backend>::Buffer,
-    memory: <Backend as hal::Backend>::Memory,
-    requirements: hal::memory::Requirements,
+pub enum Memory<'a> {
+    Reference(&'a <Backend as hal::Backend>::Memory),
+    Direct(<Backend as hal::Backend>::Memory),
 }
 
-impl Buffer {
-    pub unsafe fn upload_data<T>(&self, device: <Backend as hal::Backend>::Device, data: &[T]) where T: Copy {
-        // should we assert!(data.len() < self.requirements.size)?
+pub struct Buffer<'a>{
+    usage: hal::buffer::Usage,
+    buffer_size: u64,
+    memory: Memory<'a>,
+    requirements: hal::memory::Requirements,
+    buffer: <Backend as hal::Backend>::Buffer,
+    fence: &'a <Backend as hal::Backend>::Fence,
+}
+
+impl<'a> Buffer<'a> {
+    pub unsafe fn upload_data<T>(&self, device: &<Backend as hal::Backend>::Device, data: &[T]) where T: Copy {
+        assert!(data.len() <= self.buffer_size as usize);
         let mut writer = device
             .acquire_mapping_writer::<T>(&self.memory, 0..self.requirements.size)
             .unwrap();
@@ -1143,17 +476,106 @@ impl Buffer {
         device.release_mapping_writer(writer).unwrap();
     }
 
-    unsafe fn new(
+    unsafe fn new<'a>(
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
-        size: u64,
+        buffer_size: u64,
         usage: hal::buffer::Usage,
-    ) -> Buffer {
-        let mut buffer = device.create_buffer(size, usage)
-            .unwrap();;
+        memory_ref: Option<(u64, &'a <Backend as hal::Backend>::Memory)>,
+    ) -> Buffer<'a> {
+        let buffer = device.create_buffer(buffer_size, usage).unwrap();
+        let fence = device.create_fence().unwrap();
 
-        let requirements = device.get_buffer_requirements(&buffer);
+        let requirements = device.get_buffer_requirements(&pool[0]);
 
+        let memory = match memory_ref {
+            Some((offset, mref)) => {
+                device.bind_buffer_memory(mref, offset, buffer).unwrap();
+                Memory::Reference(mref)
+            },
+            None => {
+                let memory_type_id = adapter
+                    .physical_device
+                    .memory_properties()
+                    .memory_types
+                    .iter()
+                    .enumerate()
+                    .find(|&(id, memory_type)| {
+                        requirements.type_mask & (1 << id) != 0
+                            && memory_type
+                            .properties
+                            .contains(hal::memory::Properties::CPU_VISIBLE)
+                    })
+                    .map(|(id, _)| hal::adapter::MemoryTypeId(id))
+                    .ok_or("PhysicalDevice cannot supply required memory.")
+                    .unwrap();
+
+                let mem = device
+                    .allocate_memory(memory_type_id, (num_buffers as u64)*buffer_size)
+                    .unwrap();
+
+                device.bind_buffer_memory(&mem, 0, buffer).unwrap();
+                Memory::Direct(mem)
+            }
+        };
+
+        Buffer {
+            usage,
+            buffer_size,
+            memory,
+            requirements,
+            buffer,
+            fence,
+        }
+    }
+
+    pub fn set_fence(&mut self, new_fence: &'a <Backend as hal::Backend>::Fence) {
+        self.fence = new_fence;
+    }
+
+    pub fn buffer(&self) -> &<Backend as hal::Backend>::Buffer {
+        &self.buffer
+    }
+    pub fn fence(&self) -> &<Backend as hal::Backend>::Fence {
+        self.fence
+    }
+
+    unsafe fn destroy_buffer(device: &<Backend as hal::Backend>::Device, buffer: Buffer){
+        let Buffer { memory: mem, buffer: buf, .. } = buffer;
+        device.destroy_buffer(buf);
+
+        match mem {
+            Memory::Reference(_) => {},
+            Memory::Direct(m) => { device.free_memory(m); }
+        }
+    }
+}
+
+struct RawBufferPool<'a> {
+    device: &'a <Backend as hal::Backend>::Device,
+    usage: hal::buffer::Usage,
+    pool: Vec<Buffer<'a>>,
+    num_buffers: u8,
+    buffer_size: u64,
+    memory: <Backend as hal::Backend>::Memory,
+    requirements: hal::memory::Requirements,
+    current_frame_index: &'a usize,
+}
+
+impl<'a> RawBufferPool<'a> {
+    pub unsafe fn new<'a>(
+        adapter: &hal::Adapter<Backend>,
+        device: &'a <Backend as hal::Backend>::Device,
+        buffer_size: u64,
+        num_buffers: u8,
+        usage: hal::buffer::Usage,
+        current_frame_index: &'a usize,
+    ) -> RawBufferPool {
+        let mut pool: Vec<<Backend as hal::Backend>::BufferPool> = vec![];
+        let mut fences: Vec<<Backend as hal::Backend>::Fence> = vec![];
+
+        let dummy_buffer = device.create_buffer(buffer_size*(num_buffers as u64), usage);
+        let requirements = device.get_buffer_requirements(&dummy_buffer);
         let memory_type_id = adapter
             .physical_device
             .memory_properties()
@@ -1163,37 +585,85 @@ impl Buffer {
             .find(|&(id, memory_type)| {
                 requirements.type_mask & (1 << id) != 0
                     && memory_type
-                        .properties
-                        .contains(hal::memory::Properties::CPU_VISIBLE)
+                    .properties
+                    .contains(hal::memory::Properties::CPU_VISIBLE)
             })
             .map(|(id, _)| hal::adapter::MemoryTypeId(id))
             .ok_or("PhysicalDevice cannot supply required memory.")
-            .unwrap();;
+            .unwrap();
 
         let memory = device
             .allocate_memory(memory_type_id, requirements.size)
-            .unwrap();;
+            .unwrap();
 
-        device
-            .bind_buffer_memory(&memory, 0, &mut buffer)
-            .unwrap();;
+        for n in 0..(num_buffers as u64) {
+            pool.push(Buffer::new(adapter, device, buffer_size, usage, Some((n*buffer_size, &memory))));
+        }
 
-        Buffer {
+        RawBufferPool {
+            device,
             usage,
-            buffer,
+            pool,
+            num_buffers,
+            buffer_size,
             memory,
             requirements,
+            current_frame_index,
         }
     }
 
-    pub fn buffer(&self) -> &<Backend as hal::Backend>::Buffer {
-        &self.buffer
+    pub unsafe fn upload_data<T>(&mut self, data: &[T]) -> Option<&<Backend as hal::Backend>::Buffer> where T: Copy  {
+        let buf = &self.pool[self.current_frame_index];
+        buf.upload_data(self.device, data);
+        buf.buffer()
     }
-    
-    unsafe fn destroy_buffer(device: &<Backend as hal::Backend>::Device, buffer: Buffer){
-        let Buffer { buffer: buff, memory: mem, .. } = buffer;
-        device.destroy_buffer(buff);
+
+    unsafe fn destroy_buffer_pool(device: &<Backend as hal::Backend>::Device, buffer: RawBufferPool){
+        let RawBufferPool { pool: p, memory: mem, .. } = buffer;
+        for b in p.into_iter() {
+            device.destroy_buffer(b);
+        }
         device.free_memory(mem);
+    }
+}
+
+pub struct VertexBufferPool<'a> {
+    buffer_pool: RawBufferPool<'a>,
+    pub submission_list: Vec<(std::ops::Range<hal::VertexCount>, std::ops::Range<hal::InstanceCount>, &'a <Backend as hal::Backend>::Buffer)>,
+    current_frame_index: &'a usize,
+}
+
+impl<'a> VertexBufferPool<'a> {
+    pub unsafe fn new<'a>(
+        adapter: &hal::Adapter<Backend>,
+        device: &'a <Backend as hal::Backend>::Device,
+        buffer_size: u64,
+        num_buffers: u8,
+        usage: hal::buffer::Usage,
+        current_frame_index: &'a usize,
+    ) -> VertexBufferPool<'a> {
+        let buffer_pool = RawBufferPool::new(adapter, device, buffer_size, num_buffers, hal::buffer::Usage::VERTEX, current_frame_index);
+
+        VertexBufferPool {
+            buffer_pool,
+            submission_list: vec![],
+            current_frame_index
+        }
+    }
+
+    pub unsafe fn submit_data_to_buffer<T>(&mut self, data: &[T], vertices: std::ops::Range<hal::VertexCount>, instances: std::ops::Range<hal::InstanceCount>) where T: Copy {
+        let buf= self.buffer_pool.upload_data(data).unwrap();
+        self.submission_list.push((vertices, instances, buf));
+    }
+
+    pub unsafe fn clear_submission_list(&mut self) {
+        self.submission_list.clear();
+
+    }
+
+    pub unsafe fn destroy_vertex_buffer_pool(device: &<Backend as hal::Backend>::Device, vertex_buffer_pool: VertexBufferPool) {
+        let VertexBufferPool { buffer_pool: buf, .. } = vertex_buffer_pool;
+        RawBufferPool::destroy_buffer_pool(device, buf);
     }
 }
 
@@ -1222,7 +692,7 @@ impl Image {
                 hal::img_crate::Usage::TRANSFER_DST | hal::img_crate::Usage::SAMPLED,
                 hal::img_crate::ViewCapabilities::empty(),
             )
-            .unwrap();;
+            .unwrap();
 
         // 4. allocate memory for the image and bind it
         let requirements = device.get_image_requirements(&image);
@@ -1242,11 +712,11 @@ impl Image {
 
         let memory = device
             .allocate_memory(upload_type, requirements.size)
-            .unwrap();;
+            .unwrap();
 
         device
             .bind_image_memory(&memory, 0, &mut image)
-            .unwrap();;
+            .unwrap();
 
         Image {
             image,
@@ -1265,11 +735,11 @@ impl Image {
 
         let mut writer = device
             .acquire_mapping_writer::<u8>(&staging_buffer.memory, 0..staging_buffer.requirements.size)
-            .unwrap();;
+            .unwrap();
         writer[0..data.len()].copy_from_slice(data);
         device
             .release_mapping_writer(writer)
-            .unwrap();;
+            .unwrap();
 
         let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
         cmd_buffer.begin();
@@ -1353,13 +823,13 @@ impl Image {
 
         let upload_fence = device
             .create_fence(false)
-            .unwrap();;
+            .unwrap();
 
         command_queue.submit_nosemaphores(Some(&cmd_buffer), Some(&upload_fence));
 
         device
             .wait_for_fence(&upload_fence, core::u64::MAX)
-            .unwrap();;
+            .unwrap();
 
         device.destroy_fence(upload_fence);
 
@@ -1400,6 +870,7 @@ impl Framebuffer {
             image_view,
         }
     }
+
     pub fn image(&self) -> &Image {
         self.image.as_ref().unwrap()
     }
@@ -1432,56 +903,3 @@ pub enum PipelineVariant {
     Postprocess,
 }
 
-pub struct RenderPassDesc {
-    attachments: Vec<hal::pass::Attachment>,
-    subpass_colors: Vec<hal::pass::AttachmentRef>,
-    subpass_inputs: Vec<hal::pass::AttachmentRef>,
-}
-
-pub struct PipelineLayoutState {
-    descriptor_set_layout: <Backend as hal::Backend>::DescriptorSetLayout,
-    pipeline_layout: <Backend as hal::Backend>::PipelineLayout,
-    render_pass: <Backend as hal::Backend>::RenderPass,
-}
-
-impl PipelineLayoutState {
-    pub fn new(device: &<Backend as hal::Backend>::Device, descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, render_pass: <Backend as hal::Backend>::RenderPass) -> PipelineLayoutState {
-        let immutable_samplers = Vec::<<Backend as hal::Backend>::Sampler>::new();
-
-        let descriptor_set_layout:  = device.create_descriptor_set_layout(descriptor_set_layout_bindings, immutable_samplers).unwrap();
-
-        let push_constants = Vec::<(hal::pso::ShaderStageFlags, core::ops::Range<u32>)>::new();
-
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout([&descriptor_set_layouts], push_constants)
-                .unwrap()
-        };
-
-        PipelineLayoutState {
-            pipeline_layout,
-            descriptor_set_layout,
-            render_pass,
-        }
-    }
-
-    fn pipeline_layout(&self) -> &<Backend as hal::Backend>::PipelineLayout {
-        &self.pipeline_layout
-    }
-
-    fn render_pass(&self) -> &<Backend as hal::Backend>::RenderPass {
-        &self.render_pass
-    }
-
-    fn descriptor_set_layout(&self) -> &<Backend as hal::Backend>::DescriptorSetLayout {
-        &self.descriptor_set_layout
-    }
-
-    unsafe fn destroy_pipeline_layout_state(device: &<Backend as hal::Backend>::Device, pl_state: PipelineLayoutState){
-        let PipelineLayoutState { descriptor_set_layout: dsl, render_pass: rp, pipeline_layout: pl} = pl_state;
-
-        device.destroy_pipeline_layout(pl);
-        device.destroy_render_pass(rp);
-        destroy.descriptor_set_layout(dsl);
-    }
-}

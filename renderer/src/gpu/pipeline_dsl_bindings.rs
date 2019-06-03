@@ -136,4 +136,3 @@ pub fn create_postprocess_pipeline_descriptor_set_layout_bindings() -> Vec<hal::
         },
     ]
 }
-
