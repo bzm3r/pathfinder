@@ -88,8 +88,8 @@ impl<'a> GpuState<'a> {
         let in_flight_draw_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
         let in_flight_fill_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
 
-        let draw_pipeline_layout = PipelineLayoutState::new(&device, draw_descriptor_set_layout_bindings, draw_render_pass);
-        let postprocess_pipeline_layout = PipelineLayoutState::new(&device, postprocess_descriptor_set_layout_bindings, postprocess_render_pass);
+        let draw_pipeline_layout = crate::pipeline_state::PipelineLayoutState::new(&device, draw_descriptor_set_layout_bindings, draw_render_pass);
+        let postprocess_pipeline_layout = crate::pipeline_state::PipelineLayoutState::new(&device, postprocess_descriptor_set_layout_bindings, postprocess_render_pass);
 
         let mut command_pool = device
             .create_command_pool_typed(
@@ -99,7 +99,7 @@ impl<'a> GpuState<'a> {
             .unwrap();
 
         let fill_renderer = crate::pipeline_state::FillPipelineState::new(&adapter, &device, &fill_pipeline_layout, resources, &command_queue, &command_pool, &quad_vertex_positions_buffer, fill_framebuffer_size, max_fill_vertex_buffer_size as u64, &in_flight_fill_fences, swapchain_state.current_index_ref());
-        let draw_renderer = crate::pipeline_state::DrawRenderer::new(&adapter, &device, &draw_pipeline_layout, resources, extent, &command_queue, &command_pool, &quad_vertex_positions_buffer, max_tile_vertex_buffer_size, monochrome);
+        let draw_renderer = crate::pipeline_state::DrawPipelineState::new(&adapter, &device, &draw_pipeline_layout, resources, extent, &command_queue, &command_pool, &quad_vertex_positions_buffer, max_tile_vertex_buffer_size, monochrome);
 
         GpuState {
             instance,
@@ -265,10 +265,10 @@ impl<'a> GpuState<'a> {
                 device
                     .create_image_view(
                         &image,
-                        hal::img_crate::ViewKind::D2,
+                        hal::image::ViewKind::D2,
                         requested_format,
                         hal::format::Swizzle::NO,
-                        hal::img_crate::SubresourceRange {
+                        hal::image::SubresourceRange {
                             aspects: hal::format::Aspects::COLOR,
                             levels: 0..1,
                             layers: 0..1,
@@ -286,10 +286,10 @@ impl<'a> GpuState<'a> {
         let image_view = self.device
             .create_image_view(
                 texture,
-                hal::img_crate::ViewKind::D2,
+                hal::image::ViewKind::D2,
                 TextureFormat::to_hal_format(texture_format),
                 hal::format::Swizzle::NO,
-                hal::img_crate::SubresourceRange {
+                hal::image::SubresourceRange {
                     aspects: hal::format::Aspects::COLOR,
                     levels: 0..1,
                     layers: 0..1,
@@ -301,7 +301,7 @@ impl<'a> GpuState<'a> {
             .create_framebuffer(
                 render_pass,
                 vec![image_view],
-                hal::img_crate::Extent {
+                hal::image::Extent {
                     width: texture_size.x() as u32,
                     height: texture_size.y() as u32,
                     depth: 1,
@@ -319,7 +319,7 @@ impl<'a> GpuState<'a> {
         let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
         let image = img_crate::load_from_memory_with_format(&data, img_crate::ImageFormat::PNG).unwrap().to_luma();
         let pixel_size= std::mem::size_of::<img_crate::Luma<u8>>();
-        let size = pfgeom::Point2DI32::new(image.width() as i32, image.height() as i32);
+        let size = pfgeom::basic::point::Point2DI32::new(image.width() as i32, image.height() as i32);
 
         img_crate::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.queue_group.queues[0], size, pixel_size, &data)
     }
@@ -638,7 +638,6 @@ impl<'a> VertexBufferPool<'a> {
         device: &'a <Backend as hal::Backend>::Device,
         buffer_size: u64,
         num_buffers: u8,
-        usage: hal::buffer::Usage,
         current_frame_index: &'a usize,
     ) -> VertexBufferPool<'a> {
         let buffer_pool = RawBufferPool::new(adapter, device, buffer_size, num_buffers, hal::buffer::Usage::VERTEX, current_frame_index);
@@ -670,7 +669,7 @@ pub struct Image {
     image: <Backend as hal::Backend>::Image,
     requirements: hal::memory::Requirements,
     memory: <Backend as hal::Backend>::Memory,
-    size: pfgeom::Point2DI32,
+    size: pfgeom::basic::point::Point2DI32,
     format: hal::format::Format,
 }
 
@@ -679,17 +678,17 @@ impl Image {
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         texture_format: hal::format::Format,
-        size: pfgeom::Point2DI32,
+        size: pfgeom::basic::point::Point2DI32,
     ) -> Image {
         // 3. Make an image with transfer_dst and SAMPLED usage
         let mut image = device
             .create_image(
-                hal::img_crate::Kind::D2(size.x() as u32, size.y() as u32, 1, 0),
+                hal::image::Kind::D2(size.x() as u32, size.y() as u32, 1, 0),
                 1,
                 texture_format,
-                hal::img_crate::Tiling::Optimal,
-                hal::img_crate::Usage::TRANSFER_DST | hal::img_crate::Usage::SAMPLED,
-                hal::img_crate::ViewCapabilities::empty(),
+                hal::image::Tiling::Optimal,
+                hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
+                hal::image::ViewCapabilities::empty(),
             )
             .unwrap();
 
@@ -726,7 +725,7 @@ impl Image {
         }
     }
 
-    unsafe fn new_from_data(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>, command_queue: &mut hal::CommandQueue<back::Backend, hal::Graphics>, size: pfgeom::Point2DI32, texel_size: usize, data: &[u8]) -> Image {
+    unsafe fn new_from_data(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>, command_queue: &mut hal::CommandQueue<back::Backend, hal::Graphics>, size: pfgeom::basic::point::Point2DI32, texel_size: usize, data: &[u8]) -> Image {
         let texture = img_crate::new(adapter, device, TextureFormat::R8, size);
 
         let staging_buffer =
@@ -746,14 +745,14 @@ impl Image {
         // 7. Use a pipeline barrier to transition the image from empty/undefined
         //    to TRANSFER_WRITE/TransferDstOptimal
         let image_barrier = hal::memory::Barrier::Image {
-            states: (hal::img_crate::Access::empty(), hal::img_crate::Layout::Undefined)
+            states: (hal::image::Access::empty(), hal::image::Layout::Undefined)
                 ..(
-                hal::img_crate::Access::TRANSFER_WRITE,
-                hal::img_crate::Layout::TransferDstOptimal,
+                hal::image::Access::TRANSFER_WRITE,
+                hal::image::Layout::TransferDstOptimal,
             ),
             target: &texture.image,
             families: None,
-            range: hal::img_crate::SubresourceRange {
+            range: hal::image::SubresourceRange {
                 aspects: hal::format::Aspects::COLOR,
                 levels: 0..1,
                 layers: 0..1,
@@ -772,18 +771,18 @@ impl Image {
         cmd_buffer.copy_buffer_to_image(
             &staging_buffer.buffer,
             &texture.image,
-            hal::img_crate::Layout::TransferDstOptimal,
+            hal::image::Layout::TransferDstOptimal,
             &[hal::command::BufferImageCopy {
                 buffer_offset: 0,
                 buffer_width: (row_pitch / texel_size) as u32,
                 buffer_height: size.y() as u32,
-                image_layers: hal::img_crate::SubresourceLayers {
+                image_layers: hal::image::SubresourceLayers {
                     aspects: hal::format::Aspects::COLOR,
                     level: 0,
                     layers: 0..1,
                 },
-                image_offset: hal::img_crate::Offset { x: 0, y: 0, z: 0 },
-                image_extent: hal::img_crate::Extent {
+                image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
+                image_extent: hal::image::Extent {
                     width: size.x() as u32,
                     height: size.y() as u32,
                     depth: 1,
@@ -795,16 +794,16 @@ impl Image {
         //    ShaderReadOnlyOptimal layout
         let image_barrier = hal::memory::Barrier::Image {
             states: (
-                hal::img_crate::Access::TRANSFER_WRITE,
-                hal::img_crate::Layout::TransferDstOptimal,
+                hal::image::Access::TRANSFER_WRITE,
+                hal::image::Layout::TransferDstOptimal,
             )
                 ..(
-                hal::img_crate::Access::SHADER_READ,
-                hal::img_crate::Layout::ShaderReadOnlyOptimal,
+                hal::image::Access::SHADER_READ,
+                hal::image::Layout::ShaderReadOnlyOptimal,
             ),
             target: &texture.image,
             families: None,
-            range: hal::img_crate::SubresourceRange {
+            range: hal::image::SubresourceRange {
                 aspects: hal::format::Aspects::COLOR,
                 levels: 0..1,
                 layers: 0..1,
@@ -856,7 +855,7 @@ impl Framebuffer {
     pub unsafe fn new(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, texture_format: hal::format::Format, size: pfgeom::basic::point::Point2DI32, render_pass: &<Backend as hal::Backend>::RenderPass) -> Framebuffer {
         let image = Image::new(adapter, device, texture_format, size);
         let framebuffer = device.create_framebuffer(image, render_pass);
-        let subresource_range = hal::img_crate::SubresourceRange {
+        let subresource_range = hal::image::SubresourceRange {
             aspects: hal::format::Aspects::COLOR,
             levels: 0..1,
             layers: 0..1,

@@ -24,7 +24,7 @@ extern crate winit;
 
 use hal::{Device};
 
-use crate::{resources, pipeline_layout};
+use crate::{resources, pipeline_state};
 use crate::{StencilFunc, BlendState};
 use pathfinder_geometry as pfgeom;
 
@@ -164,16 +164,16 @@ unsafe fn compose_shader_module(
         .unwrap();
 
     let mut load_include_tile_alpha_vertex =
-        |_| load_shader_include(resources, "tile_alpha_vertex");
+        |_| crate::load_shader_include(resources, "tile_alpha_vertex");
     let mut load_include_tile_monochrome =
-        |_| load_shader_include(resources, "tile_monochrome");
+        |_| crate::load_shader_include(resources, "tile_monochrome");
     let mut load_include_tile_multicolor =
-        |_| load_shader_include(resources, "tile_multicolor");
+        |_| crate::load_shader_include(resources, "tile_multicolor");
     let mut load_include_tile_solid_vertex =
-        |_| load_shader_include(resources, "tile_solid_vertex");
-    let mut load_include_post_convolve = |_| load_shader_include(resources, "post_convolve");
+        |_| crate::load_shader_include(resources, "tile_solid_vertex");
+    let mut load_include_post_convolve = |_| crate::load_shader_include(resources, "post_convolve");
     let mut load_include_post_gamma_correct =
-        |_| load_shader_include(resources, "post_gamma_correct");
+        |_| crate::load_shader_include(resources, "post_gamma_correct");
     let template_input = rustache::HashBuilder::new()
         .insert_lambda(
             "include_tile_alpha_vertex",
@@ -219,26 +219,26 @@ unsafe fn compose_shader_module(
 }
 
 pub struct PipelineDescription {
-    size: pfgeom::basic::point::Point2DI32,
-    shader_name: String,
-    vertex_buffer_descriptions: Vec<hal::pso::VertexBufferDesc>,
-    attribute_descriptions: Vec<hal::pso::AttributeDesc>,
-    rasterizer: hal::pso::Rasterizer,
-    depth_stencil: hal::pso::DepthStencilDesc,
-    blend_state: crate::BlendState,
-    baked_states: hal::pso::BakedStates,
+    pub size: pfgeom::basic::point::Point2DI32,
+    pub shader_name: String,
+    pub vertex_buffer_descriptions: Vec<hal::pso::VertexBufferDesc>,
+    pub attribute_descriptions: Vec<hal::pso::AttributeDesc>,
+    pub rasterizer: hal::pso::Rasterizer,
+    pub depth_stencil: hal::pso::DepthStencilDesc,
+    pub blend_state: crate::BlendState,
+    pub baked_states: hal::pso::BakedStates,
 }
 
 pub unsafe fn create_pipeline<'a>(
     device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &crate::pipeline_state::PipelineLayout,
+    pipeline_layout: &crate::pipeline_state::PipelineLayoutState,
     resources: &dyn resources::ResourceLoader,
     pipeline_description: PipelineDescription,
 ) -> <Backend as hal::Backend>::GraphicsPipeline {
     let vertex_shader_module =
-        compose_shader_module(device, resources, shader_name, ShaderKind::Vertex);
+        compose_shader_module(device, resources, &pipeline_description.shader_name, ShaderKind::Vertex);
     let fragment_shader_module =
-        compose_shader_module(device, resources, shader_name, ShaderKind::Fragment);
+        compose_shader_module(device, resources, &pipeline_description.shader_name, ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -288,42 +288,20 @@ pub unsafe fn create_pipeline<'a>(
 
     let input_assembler = hal::pso::InputAssemblerDesc::new(hal::Primitive::TriangleList);
 
-    let blender = generate_blend_desc(blend_state);
+    let blender = generate_blend_desc(pipeline_description.blend_state);
 
     let framebuffer_size_rect = hal::pso::Rect {
         x: 0,
         y: 0,
-        w: size.x() as i16,
-        h: size.y() as i16,
+        w: pipeline_description.size.x() as i16,
+        h: pipeline_description.size.y() as i16,
     };
 
     let render_pass = pipeline_layout.get_render_pass();
     let layout = pipeline_layout.get_layout();
 
     let pipeline = {
-        let desc = hal::pso::GraphicsPipelineDesc {
-            shaders,
-            rasterizer,
-            vertex_buffers,
-            attributes,
-            input_assembler,
-            blender,
-            depth_stencil,
-            multisampling: None,
-            baked_states,
-            layout: pipeline_layout.get_layout(),
-            subpass: hal::pass::Subpass {
-                index: 0,
-                main_pass: pipeline_layout.get_render_pass(),
-            },
-            flags: hal::pso::PipelineCreationFlags::empty(),
-            parent: hal::pso::BasePipeline::None,
-        };
-
-        device.create_graphics_pipeline(&desc, None).unwrap()
-    };
-
-    let pipeline = {
+        let PipelineDescription { rasterizer, vertex_buffers, attributes, depth_stencil, baked_states, ..} = pipeline_description;
         let desc = hal::pso::GraphicsPipelineDesc {
             shaders,
             rasterizer,

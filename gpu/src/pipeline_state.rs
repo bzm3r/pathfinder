@@ -24,142 +24,50 @@ extern crate shaderc;
 extern crate winit;
 
 use hal::{Instance, Surface, Capability, Device, QueueFamily, PhysicalDevice, };
-use crate::resources::ResourceLoader;
+use crate::resources as resources_crate;
 use image as img_crate;
 use pathfinder_geometry as pfgeom;
 use pathfinder_simd as pfsimd;
 use takeable_option::Takeable;
 
-pub struct DrawPipelineState<'a> {
-    adapter: &'a mut hal::Adapter<Backend>,
-    device: &'a <Backend as hal::Backend>::Device,
-    window: &'a winit::Window,
-    max_frames_in_flight: usize,
-    surface: <Backend as hal::Backend>::Surface,
+pub struct SwapchainState {
     swapchain_image_format: hal::format::Format,
-    swapchain_images: Takeable<Vec<<Backend as hal::Backend>::Image>>,
-    swapchain_image_views: Takeable<Vec<<Backend as hal::Backend>::ImageView>>,
-    swapchain_framebuffers: Takeable<Vec<<Backend as hal::Backend>::Framebuffer>>,
-    swapchain: Takeable<<Backend as hal::Backend>::Swapchain>,
-    in_flight_fences: Takeable<<Backend as hal::Backend>::Fence>,
-    draw_pipeline_render_pass_desc: crate::render_pass::RenderPassDesc,
-    draw_pipeline_layout_state: Takeable<PipelineLayoutState>,
-    postprocess_pipeline_layout_state: Takeable<PipelineLayoutState>,
-    solid_tile_multicolor_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    solid_tile_monochrome_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    alpha_tile_multicolor_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    alpha_tile_monochrome_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    stencil_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    postprocess_pipeline: Takeable<<Backend as hal::Backend>::Pipeline>,
-    quad_positions_vertex_buffer: &'a crate::Buffer<'a>,
-    solid_tile_vertex_buffer: VertexBufferPool,
-    alpha_tile_vertex_buffer: VertexBufferPool,
-    stencil_vertex_buffer: VertexBufferPool,
-    fill_pipeline_state: FillPipelineState<'a>,
-    monochrome: bool,
-    command_queue: <Backend as hal::Backend>::CommandQueue,
-    command_pool: <Backend as hal::Backend>::CommandPool,
-    current_frame_index: usize,
+    swapchain_images: Vec<<Backend as hal::Backend>::Image>,
+    swapchain_image_views: Vec<<Backend as hal::Backend>::ImageView>,
+    swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer>,
+    swapchain: <Backend as hal::Backend>::Swapchain,
+    in_flight_fences: Vec<<Backend as hal::Backend>::Fence>,
+    draw_pipeline_layout_state: PipelineLayoutState,
+    postprocess_pipeline_layout_state: PipelineLayoutState,
+    postprocess_pipeline_description: crate::pipeline::PipelineDescription,
+    solid_tile_multicolor_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    solid_tile_monochrome_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    alpha_tile_multicolor_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    alpha_tile_monochrome_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    stencil_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    postprocess_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
+    submission_command_buffers: Vec<<Backend as hal::Backend>::CommandBuffer>,
 }
 
-impl<'a> DrawPipelineState<'a> {
-    pub unsafe fn new<'a>(
-        adapter: &'a mut hal::Adapter<Backend>,
-        device: &'a <Backend as hal::Backend>::Device,
-        surface: &mut <Backend as hal::Backend>::Surface,
-        window: &'a winit::Window,
-        command_pool: <Backend as hal::Backend>::CommandPool,
-        draw_render_pass_desc: crate::render_pass::RenderPassDesc,
-        fill_render_pass_desc: crate::render_pass::RenderPassDesc,
-        postprocess_render_pass_desc: crate::render_pass::RenderPassDesc,
-        fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
-    ) -> DrawPipelineState {
-        let current_frame_index: usize = 0;
-        
-        let fill_pipeline_state = FillPipelineState::new(adapter, device, resources, &command_queue, &command_pool, &quad_vertex_positions_buffer, fill_framebuffer_size, max_fill_vertex_buffer_size, &current_frame_index);
-
-        let (swapchain_image_format,
-            swapchain_images,
-            swapchain_image_views,
-            swapchain_framebuffers,
-            swapchain,
-            draw_pipeline_layout_state,
-            solid_tile_multicolor_pipeline,
-            solid_tile_monochrome_pipeline,
-            alpha_tile_multicolor_pipeline,
-            alpha_tile_monochrome_pipeline,
-            stencil_pipeline,
-            postprocess_pipeline_layout_state,
-            postprocess_pipeline,
-            submission_command_buffers
-        ) = DrawPipelineState::create_state(adapter,
-                                                device,
-                                                surface,
-                                                window,
-                                                command_pool,
-                                                draw_render_pass_desc);
-
-        DrawPipelineState {
-            adapter,
-            device,
-            window,
-            max_frames_in_flight,
-            surface,
-            swapchain_image_format,
-            swapchain_images,
-            swapchain_image_views,
-            swapchain_framebuffers,
-            swapchain,
-            in_flight_fences,
-            draw_pipeline_render_pass_desc,
-            draw_pipeline_layout_state,
-            postprocess_pipeline_layout_state,
-            solid_tile_multicolor_pipeline,
-            solid_tile_monochrome_pipeline,
-            alpha_tile_multicolor_pipeline,
-            alpha_tile_monochrome_pipeline,
-            stencil_pipeline,
-            postprocess_pipeline,
-            quad_positions_vertex_buffer,
-            solid_tile_vertex_buffer,
-            alpha_tile_vertex_buffer,
-            stencil_vertex_buffer,
-            fill_pipeline_state,
-            monochrome,
-            command_pool,
-            command_queue,
-            submission_command_buffers,
-            current_frame_index: usize,
-        }
-    }
-
-    pub unsafe fn get_framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
-        &self.swapchain_framebuffers[self.current_index]
-    }
-
-    pub fn request_free_frame_index(&mut self) -> Option<usize> {
-        self.device.wait_for_fences(self.in_flight_fences.iter(), hal::device::WaitFor::Any, core::u64::max);
-
-        for (i, f) in self.in_flight_fences.iter().enumerate() {
-            if self.device.get_fence_status(f).unwrap() {
-                return Some(i);
-            }
-        }
-
-        None
-    }
-
-    pub unsafe fn create_state(
+impl SwapchainState {
+    unsafe fn new(
         adapter: &mut hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
+        window: &winit::Window,
         surface: &mut <Backend as hal::Backend>::Surface,
-        command_pool: &<Backend as hal::Backend>::CommanPool,
+        resources: &dyn resources_crate::ResourceLoader,
+        command_pool: &<Backend as hal::Backend>::CommandPool,
         draw_render_pass_desc: crate::render_pass::RenderPassDesc,
-        draw_dsl_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        post_dsl_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>)
+        postprocess_render_pass_desc: crate::render_pass::RenderPassDesc,
+        draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+        postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+        solid_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+        solid_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+        alpha_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+        alpha_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+        stencil_pipeline_description: crate::pipeline::PipelineDescription,
+        postprocess_pipeline_description: crate::pipeline::PipelineDescription,
+    ) -> SwapchainState
     {
         let (capabilities, compatible_formats, _compatible_present_modes) =
             surface.compatibility(&mut adapter.physical_device);
@@ -196,7 +104,7 @@ impl<'a> DrawPipelineState<'a> {
             }
         };
 
-        let swapchain_config = hal::window::SwapchainConfig::from_caps(&capabilities, draw_image_format, extent);
+        let swapchain_config = hal::window::SwapchainConfig::from_caps(&capabilities, swapchain_image_format, extent);
 
         let (swapchain, swapchain_images) = device
             .create_swapchain(surface, swapchain_config, None)
@@ -222,20 +130,7 @@ impl<'a> DrawPipelineState<'a> {
 
         let max_frames_in_flight = swapchain_images.len();
 
-        let mut swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer> =
-            swapchain_image_views
-                .iter()
-                .map(|iv| device.create_framebuffer(iv, draw_render_pass, vec![iv], extent))
-                .collect();
-
-        let in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = (0..max_frames_in_flight).into_iter().map(|_| device.create_fence().unwrap()).collect();
-
-        let submission_command_buffers: Vec<_> = swapchain_framebuffers
-            .iter()
-            .map(|_| command_pool.acquire_command_buffer())
-            .collect();
-
-        let RenderPassDesc {attachments: mut attachments, subpass_colors: subpoass_colors, subpass_inputs: subpass_inputs} = draw_render_pass_desc;
+        let crate::render_pass::RenderPassDesc {attachments: mut attachments, subpass_colors: subpass_colors, subpass_inputs: subpass_inputs} = draw_render_pass_desc;
         let hal::pass::Attachment{samples: samples, ops: ops, stencil_ops: stencil_ops, layouts: layouts, ..} = attachments.pop().unwrap();
         let attachments = vec![hal::pass::Attachment{
             format: Some(swapchain_image_format),
@@ -251,15 +146,225 @@ impl<'a> DrawPipelineState<'a> {
             subpass_inputs,
         };
 
-        let render_pass = DrawPipelineState::create_render_pass(device, draw_render_pass_desc);
-        let draw_pipeline_layout_state = PipelineLayoutState::new(device, descriptor_set_layout_bindings, &render_pass);
+        let draw_render_pass = DrawPipelineState::create_render_pass(device, draw_render_pass_desc);
+        let draw_pipeline_layout_state = PipelineLayoutState::new(device, draw_descriptor_set_layout_bindings, &draw_render_pass);
+
+        let mut swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer> =
+            swapchain_image_views
+                .iter()
+                .map(|iv| device.create_framebuffer(iv, draw_render_pass, vec![iv], extent))
+                .collect();
+
+        let in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = (0..max_frames_in_flight).into_iter().map(|_| device.create_fence().unwrap()).collect();
+
+        let submission_command_buffers: Vec<_> = swapchain_framebuffers
+            .iter()
+            .map(|_| command_pool.acquire_command_buffer())
+            .collect();
 
         let solid_tile_multicolor_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, solid_tile_multicolor_pipeline_description);
         let solid_tile_monochrome_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, solid_tile_monochrome_pipeline_description);
         let alpha_tile_multicolor_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, alpha_tile_multicolor_pipeline_description);
         let alpha_tile_monochrome_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, alpha_tile_monochrome_pipeline_description);
         let stencil_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, stencil_pipeline_description);
+
+        let postprocess_render_pass = DrawPipelineState::create_render_pass(device, postprocess_render_pass_desc);
+        let postprocess_pipeline_layout_state = PipelineLayoutState::new(device, postprocess_descriptor_set_layout_bindings, &postprocess_render_pass);
         let postprocess_pipeline = crate::pipeline::create_pipeline(device, &draw_pipeline_layout_state, resources, postprocess_pipeline_description);
+
+        let in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = (0..max_frames_in_flight).iter().map(|_| device.create_fence().unwrap()).collect();
+
+        SwapchainState {
+            swapchain_image_format,
+            swapchain_images,
+            swapchain_image_views,
+            swapchain_framebuffers,
+            swapchain,
+            in_flight_fences,
+            draw_pipeline_layout_state,
+            postprocess_pipeline_layout_state,
+            postprocess_pipeline_description,
+            solid_tile_multicolor_pipeline,
+            solid_tile_monochrome_pipeline,
+            alpha_tile_multicolor_pipeline,
+            alpha_tile_monochrome_pipeline,
+            stencil_pipeline,
+            postprocess_pipeline,
+            submission_command_buffers,
+        }
+    }
+
+    unsafe fn destroy_swapchain_state(device: &<Backend as hal::Backend>::Device, command_pool: &<Backend as hal::Backend>::CommandPool, swapchain_state: SwapchainState) {
+        let SwapchainState {
+            in_flight_fences,
+            swapchain_image_format,
+            swapchain_images,
+            swapchain_image_views,
+            swapchain_framebuffers,
+            swapchain,
+            draw_pipeline_layout_state,
+            solid_tile_multicolor_pipeline,
+            solid_tile_monochrome_pipeline,
+            alpha_tile_multicolor_pipeline,
+            alpha_tile_monochrome_pipeline,
+            stencil_pipeline,
+            postprocess_pipeline_layout_state,
+            postprocess_pipeline,
+            submission_command_buffers
+        } = swapchain_state;
+
+        for f in in_flight_fences.into_iter() {
+            device.destroy_fence(f);
+        }
+
+        for iv in swapchain_image_views.into_iter() {
+            device.destroy_image_view(iv);
+        }
+
+        for i in swapchain_images.into_iter() {
+            device.destroy_image(i);
+        }
+
+        for fb in swapchain_framebuffers.into_iter() {
+            device.destroy_framebuffer(fb)
+        }
+
+        for pl in [solid_tile_multicolor_pipeline, solid_tile_monochrome_pipeline, alpha_tile_multicolor_pipeline, alpha_tile_monochrome_pipeline, stencil_pipeline, postprocess_pipeline] {
+            device.destroy_graphics_pipeline(pl);
+        }
+
+        for pl_s in [draw_pipeline_layout_state, postprocess_pipeline_layout_state] {
+            PipelineLayoutState::destroy_pipeline_layout_state(device, pl_s);
+        }
+    }
+}
+
+pub struct DrawPipelineState<'a> {
+    adapter: &'a mut hal::Adapter<Backend>,
+    device: &'a <Backend as hal::Backend>::Device,
+    window: &'a winit::Window,
+    surface: <Backend as hal::Backend>::Surface,
+    draw_pipeline_render_pass_desc: crate::render_pass::RenderPassDesc,
+    postprocess_pipeline_render_pass_desc: crate::render_pass::RenderPassDesc,
+    solid_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+    solid_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+    alpha_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+    alpha_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+    stencil_pipeline_description: crate::pipeline::PipelineDescription,
+    swapchain_state: Takeable<SwapchainState>,
+    quad_vertex_positions_buffer: &'a crate::Buffer<'a>,
+    solid_tile_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    alpha_tile_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    stencil_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    fill_pipeline_state: FillPipelineState<'a>,
+    monochrome: bool,
+    command_queue: <Backend as hal::Backend>::CommandQueue,
+    command_pool: <Backend as hal::Backend>::CommandPool,
+    current_frame_index: usize,
+}
+
+impl<'a> DrawPipelineState<'a> {
+    pub unsafe fn new<'a>(
+        adapter: &'a mut hal::Adapter<Backend>,
+        device: &'a <Backend as hal::Backend>::Device,
+        surface: &mut <Backend as hal::Backend>::Surface,
+        window: &'a winit::Window,
+        resources: &dyn resources_crate::ResourceLoader,
+        command_queue: <Backend as hal::Backend>::CommandQueue,
+        command_pool: <Backend as hal::Backend>::CommandPool,
+        quad_vertex_positions_buffer: &'a crate::Buffer,
+        draw_render_pass_desc: crate::render_pass::RenderPassDesc,
+        fill_render_pass_desc: crate::render_pass::RenderPassDesc,
+        postprocess_render_pass_desc: crate::render_pass::RenderPassDesc,
+        fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+        draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+        postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+        solid_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+        solid_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+        alpha_tile_multicolor_pipeline_description: crate::pipeline::PipelineDescription,
+        alpha_tile_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
+        stencil_pipeline_description: crate::pipeline::PipelineDescription,
+        postprocess_pipeline_description: crate::pipeline::PipelineDescription,
+        fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
+        max_fill_vertex_buffer_size: u64,
+        max_tile_vertex_buffer_size: u64,
+        monochrome: bool,
+    ) -> DrawPipelineState {
+        let current_frame_index: usize = 0;
+
+
+        let fill_pipeline_state = FillPipelineState::new(adapter, device, resources, command_queue, command_pool, quad_vertex_positions_buffer, fill_framebuffer_size, max_fill_vertex_buffer_size, &current_frame_index);
+
+        let swapchain_state = DrawPipelineState::create_swapchain_state(adapter,
+                                            device,
+                                            window,
+                                            surface,
+                                            resources,
+                                            &command_pool,
+                                            draw_render_pass_desc,
+                                            postprocess_render_pass_desc,
+                                            draw_descriptor_set_layout_bindings,
+                                            postprocess_descriptor_set_layout_bindings,
+                                            solid_tile_multicolor_pipeline_description,
+                                            solid_tile_monochrome_pipeline_description,
+                                            alpha_tile_multicolor_pipeline_description,
+                                            alpha_tile_monochrome_pipeline_description,
+                                            postprocess_pipeline_description);
+
+        let solid_tile_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8, &current_frame_index);
+        let alpha_tile_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8, &current_frame_index);
+        let stencil_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, quad_vertex_positions_buffer.buffer_size, swapchain_state.in_flight_fences.len() as u8, &current_frame_index);
+
+        DrawPipelineState {
+            adapter,
+            device,
+            window,
+            surface,
+            draw_pipeline_render_pass_desc,
+            postprocess_pipeline_render_pass_desc,
+            solid_tile_multicolor_pipeline_description,
+            solid_tile_monochrome_pipeline_description,
+            alpha_tile_multicolor_pipeline_description,
+            alpha_tile_monochrome_pipeline_description,
+            stencil_pipeline_description,
+            swapchain_state: Takeable::new(swapchain_state),
+            quad_vertex_positions_buffer,
+            solid_tile_vertex_buffer_pool,
+            alpha_tile_vertex_buffer_pool,
+            stencil_vertex_buffer_pool,
+            fill_pipeline_state,
+            monochrome,
+            command_queue,
+            command_pool:,
+            current_frame_index,
+        }
+    }
+
+    pub unsafe fn get_framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
+        &self.swapchain_framebuffers[self.current_index]
+    }
+
+    pub fn request_free_frame_index(&mut self) -> Option<usize> {
+        self.device.wait_for_fences(self.in_flight_fences.iter(), hal::device::WaitFor::Any, core::u64::MAX);
+
+        for (i, f) in self.in_flight_fences.iter().enumerate() {
+            if self.device.get_fence_status(f).unwrap() {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    fn recreate_swapchain(&mut self) {
+        match self.swapchain_state.take() {
+            Some(ss) => {
+                SwapchainState::destroy_swapchain_state(self.device, &self.command_pool, ss);
+            },
+            _ => {},
+        }
+
+        self.swapchain_state = Takeable::new(SwapchainState::new(self.adapter, self.device, self.window, self.surface, self.resources, self.command_pool, self.draw_render_pass_desc, ))
     }
 
     pub unsafe fn present(&mut self, command_queue: &mut <Backend as hal::Backend>::CommandQueue) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError>  {
@@ -292,55 +397,41 @@ impl<'a> DrawPipelineState<'a> {
     }
 
     pub unsafe fn destroy_draw_pipeline_state(device: &<Backend as hal::Backend>::Device, draw_pipeline_state: DrawPipelineState) {
-        let DrawPipelineState { swapchain_framebuffers: sfbs, swapchain: sc, image_available_semaphores: ias, render_finished_semaphores: rfs} = swapchain_state;
-
-        for s in ias.into_iter() {
-            device.destroy_semaphore(s);
-        }
-
-        for s in rfs.into_iter() {
-            device.destroy_semaphore(s);
-        }
-
-        for fb in sfbs.into_iter() {
-            crate::Framebuffer::destroy_framebuffer(device, fb);
-        }
-
-        device.destroy_swapchain(sc);
+        unimplemented!()
     }
 }
 
 pub struct FillPipelineState<'a> {
     device: &'a <Backend as hal::Backend>::Backend,
-    pipeline: <Backend as hal::Backend>::Pipeline,
+    pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     pipeline_layout_state: PipelineLayoutState,
     command_queue: &'a <Backend as hal::Backend>::CommandQueue,
     command_pool: &'a <Backend as hal::Backend>::CommandPool,
     quad_positions_vertex_buffer: &'a crate::Buffer<'a>,
     framebuffer: Framebuffer,
-    fill_vertex_buffer_pool: VertexBufferPool<'a>,
-    mask_framebuffer_size: pfgeom::basic::point::Point2DI32,
+    fill_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
 }
 
 impl<'a> FillPipelineState<'a> {
-    unsafe fn new(adapter: &hal::Adapter<Backend>,
+    pub unsafe fn new(adapter: &hal::Adapter<Backend>,
                   device: &'a <Backend as hal::Backend>::Device,
-                  resources: &dyn resources::ResourceLoader,
+                  resources: &dyn resources_crate::ResourceLoader,
                   command_queue: &'a <Backend as hal::Backend>::CommandQueue,
                   command_pool: &'a <Backend as hal::Backend>::CommandPool,
                   quad_vertex_positions_buffer: &'a crate::Buffer,
-                  mask_framebuffer_size: pfgeom::basic::point::Point2DI32,
+                  fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
                   max_fill_vertex_buffer_size: u64,
                   current_frame_index: &'a usize) -> FillPipelineState<'a>
     {
         let fill_render_pass = create_render_pass(&device, crate::render_pass::create_fill_render_pass_desc());
         let pipeline_layout_state = PipelineLayoutState::new(&device, fill_descriptor_set_layout_bindings, fill_render_pass);
 
-        let framebuffer = Framebuffer::new(adapter, device, hal::format::Format::R16Sfloat, mask_framebuffer_size, pipeline_layout_state.render_pass());
+        let framebuffer = crate::Framebuffer::new(adapter, device, hal::format::Format::R16Sfloat, fill_framebuffer_size, pipeline_layout_state.render_pass());
 
-        let fill_vertex_buffer = VertexBufferPool::new(adapter, device, max_fill_vertex_buffer_size, fill_vertex_buffer_pool_size, hal::buffer::Usage::VERTEX, current_frame_index, in_flight_fill_fences);
+        let fill_vertex_buffer = crate::VertexBufferPool::new(adapter, device, max_fill_vertex_buffer_size, fill_vertex_buffer_pool_size, hal::buffer::Usage::VERTEX, current_frame_index, in_flight_fill_fences);
 
-        let pipeline = pipeline::create_fill_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, mask_framebuffer_size);
+        let pipeline = crate::pipeline::create_fill_pipeline(device, pipeline_layout_state.pipeline_layout(), resources, fill_framebuffer_size);
 
         FillPipelineState {
             device,
@@ -351,7 +442,7 @@ impl<'a> FillPipelineState<'a> {
             quad_positions_vertex_buffer,
             framebuffer,
             fill_vertex_buffer_pool,
-            mask_framebuffer_size,
+            fill_framebuffer_size,
         }
     }
 
@@ -359,11 +450,11 @@ impl<'a> FillPipelineState<'a> {
         &self.framebuffer.unwrap().framebuffer()
     }
 
-    fn pipeline(&self) -> &<Backend as hal::Backend>::Pipeline {
+    fn pipeline(&self) -> &<Backend as hal::Backend>::GraphicsPipeline {
         &self.pipeline
     }
 
-    pub unsafe fn upload_vertex_buffer_data<T>(&mut self, data: &[crate::gpu_data::FillBatchPrimitive], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+    pub unsafe fn upload_vertex_buffer_data<T>(&mut self, data: &[crate::batch_primitives::FillBatchPrimitive], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
         self.fill_vertex_buffer_pool.submit_data_to_buffer(data, first_vertex..vertex_count, first_instance..instance_count);
     }
 
@@ -381,8 +472,8 @@ impl<'a> FillPipelineState<'a> {
                                      hal::pso::Rect {
                                          x: 0,
                                          y: 0,
-                                         w: self.mask_framebuffer_size.x() as i16,
-                                         h: self.mask_framebuffer_size.y() as i16,
+                                         w: self.fill_framebuffer_size.x() as i16,
+                                         h: self.fill_framebuffer_size.y() as i16,
                                      },
                                      &[]);
 
@@ -413,16 +504,13 @@ impl<'a> FillPipelineState<'a> {
             device.destroy_fence(f);
         }
 
-        device.destroy_semaphore(fs);
-
-        RawBufferPool::destroy_buffer(device, idb);
-        RawBufferPool::destroy_buffer(device, fvb);
+        crate::VertexBufferPool::destroy_buffer(device, fvb);
     }
 }
 
 pub struct PipelineLayoutState {
     descriptor_set_layout: <Backend as hal::Backend>::DescriptorSetLayout,
-    pipeline_layout: <Backend as hal::Backend>::PipelineLayout,
+    pipeline_layout: <Backend as hal::Backend>::GraphicsPipelineLayout,
     render_pass: Option<<Backend as hal::Backend>::RenderPass>,
 }
 
@@ -447,7 +535,7 @@ impl PipelineLayoutState {
         }
     }
 
-    fn pipeline_layout(&self) -> &<Backend as hal::Backend>::PipelineLayout {
+    fn pipeline_layout(&self) -> &<Backend as hal::Backend>::GraphicsPipelineLayout {
         &self.pipeline_layout
     }
 
