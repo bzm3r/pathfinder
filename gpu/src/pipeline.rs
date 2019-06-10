@@ -231,14 +231,14 @@ pub struct PipelineDescription {
 
 pub unsafe fn create_pipeline<'a>(
     device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: PipelineLayoutState,
+    pipeline_layout: &crate::pipeline_state::PipelineLayout,
     resources: &dyn resources::ResourceLoader,
     pipeline_description: PipelineDescription,
 ) -> <Backend as hal::Backend>::GraphicsPipeline {
     let vertex_shader_module =
-        compose_shader_module(device, resources, shader_name, crate::ShaderKind::Vertex);
+        compose_shader_module(device, resources, shader_name, ShaderKind::Vertex);
     let fragment_shader_module =
-        compose_shader_module(device, resources, shader_name, crate::ShaderKind::Fragment);
+        compose_shader_module(device, resources, shader_name, ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {

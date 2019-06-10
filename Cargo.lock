@@ -1421,6 +1421,7 @@ dependencies = [
  "pathfinder_simd 0.3.0",
  "rustache 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "shaderc 0.3.16 (registry+https://github.com/rust-lang/crates.io-index)",
+ "takeable-option 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "winit 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -2128,6 +2129,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "takeable-option"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "term"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2697,6 +2703,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum svgtypes 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c43c25e6de7264024b5e351eb0c342039eb5acf51f2e9d0099bbd324b661453b"
 "checksum syn 0.15.34 (registry+https://github.com/rust-lang/crates.io-index)" = "a1393e4a97a19c01e900df2aec855a29f71cf02c402e2f443b8d2747c25c5dbe"
 "checksum synstructure 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)" = "73687139bf99285483c96ac0add482c3776528beac1d97d444f6e91f203a2015"
+"checksum takeable-option 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "d77adff586b9bd922afef7791341ed94b09845e11225929217efe949e6366d43"
 "checksum term 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)" = "edd106a334b7657c10b7c540a0106114feadeb4dc314513e97df481d5d966f42"
 "checksum termcolor 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)" = "4096add70612622289f2fdcdbd5086dc81c1e2675e6ae58d6c4f62a16c6d7f2f"
 "checksum termion 1.5.2 (registry+https://github.com/rust-lang/crates.io-index)" = "dde0593aeb8d47accea5392b39350015b5eccb12c0d98044d856983d89548dea"

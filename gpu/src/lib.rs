@@ -31,11 +31,10 @@ use rustache::HashBuilder;
 use rustache::Render;
 
 pub mod resources;
-mod pipeline_layout;
-mod pipeline;
-mod render_pass;
+pub mod pipeline;
+pub mod render_pass;
 mod pipeline_state;
-mod gpu_data;
+mod batch_primitives;
 
 pub struct GpuState<'a> {
     instance: back::Instance,

@@ -17,6 +17,7 @@ env_logger = "0.5.12"
 shaderc = "0.3.16"
 winit = "0.19.1"
 log = "0.4"
+takeable-option = "0.4.0"
 
 [dependencies.image]
 version = "0.21"

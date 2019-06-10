@@ -198,8 +198,7 @@ fn generate_depth_test_for_stencil_shader() -> hal::pso::DepthTest {
 pub unsafe fn create_fill_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
-
-    let shader_name = String::new("fill");
+    let shader_name = String::from("fill");
 
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // quad_vertex_positions_buffer
@@ -258,7 +257,7 @@ pub unsafe fn create_fill_pipeline_description(
         stencil: hal::pso::StencilTest::Off,
     };
 
-    let blend_state = pfgpu::BlendState::RGBOneAlphaOne;
+    let blend_state = pfgpu::pfgpu::BlendStateRGBOneAlphaOne;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -282,101 +281,10 @@ pub unsafe fn create_fill_pipeline_description(
     }
 }
 
-pub unsafe fn create_solid_tile_multicolor_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
-    resources: &dyn resources::ResourceLoader,
+pub unsafe fn create_solid_tile_multicolor_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
-
-    let shader_name = String::new("tile_solid_multicolor");
-    
-    let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
-        // quad_vertex_positions_buffer
-        hal::pso::VertexBufferDesc {
-            binding: 0,
-            stride: 0,
-            rate: hal::pso::VertexInputRate::Vertex,
-        },
-        // solid_multicolor_vertex_buffer
-        hal::pso::VertexBufferDesc {
-            binding: 1,
-            stride: SOLID_TILE_INSTANCE_SIZE,
-            rate: hal::pso::VertexInputRate::Vertex,
-        },
-    ];
-
-    let attributes: Vec<hal::pso::AttributeDesc> = {
-        let quad_vertex_positions_buffer_cursor: u32 = 0;
-        let solid_multicolor_vertex_buffer_cursor: u32 = 0;
-
-        let (quad_vertex_positions_buffer_cursor, tess_coord_attribute_desc) =
-            generate_tess_coord_attribute_desc(0, 0, quad_vertex_positions_buffer_cursor, 2);
-        let (solid_multicolor_vertex_buffer_cursor, tile_origin_attribute_desc) =
-            generate_solid_tile_origin_attribute_desc(
-                1,
-                1,
-                solid_multicolor_vertex_buffer_cursor,
-                2,
-            );
-        let (solid_multicolor_vertex_buffer_cursor, object_attribute_desc) =
-            generate_object_attribute_desc(1, 2, solid_multicolor_vertex_buffer_cursor, 1);
-
-        vec![
-            tess_coord_attribute_desc,
-            tile_origin_attribute_desc,
-            object_attribute_desc,
-        ]
-    };
-
-    let rasterizer = hal::pso::Rasterizer {
-        depth_clamping: false,
-        polygon_mode: hal::pso::PolygonMode::Fill,
-        cull_face: hal::pso::Face::NONE,
-        front_face: hal::pso::FrontFace::CounterClockwise,
-        depth_bias: None,
-        conservative: false,
-    };
-
-    let depth_stencil = hal::pso::DepthStencilDesc {
-        depth: hal::pso::DepthTest::Off,
-        depth_bounds: false,
-        stencil: generate_stencil_test(StencilFunc::Equal, 1, 1, false),
-    };
-
-    let blend_state = BlendState::Off;
-
-    let baked_states = hal::pso::BakedStates {
-        viewport: Some(hal::pso::Viewport {
-            rect: extent.to_extent().rect(),
-            depth: (0.0..1.0),
-        }),
-        scissor: Some(extent.to_extent().rect()),
-        blend_color: None,
-        depth_bounds: None,
-    };
-
-    pfgpu::pipeline::PipelineDesc {
-        size,
-        shader_name,
-        vertex_buffer_descriptions,
-        attribute_descriptions,
-        rasterizer,
-        depth_stencil,
-        blend_state,
-        baked_states,
-    }
-}
-
-
-pub unsafe fn create_solid_tile_monochrome_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
-    resources: &dyn resources::ResourceLoader,
-    size: pfgeom::basic::point::Point2DI32,
-) -> pfgpu::pipeline::PipelineDesc {
-
-    let shader_name = String::new("tile_solid_monochrome");
+    let shader_name = String::from("tile_solid_multicolor");
 
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // quad_vertex_positions_buffer
@@ -428,10 +336,10 @@ pub unsafe fn create_solid_tile_monochrome_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: hal::pso::DepthTest::Off,
         depth_bounds: false,
-        stencil: generate_stencil_test(StencilFunc::Equal, 1, 1, false),
+        stencil: generate_stencil_test(pfgpu::StencilFuncEqual, 1, 1, false),
     };
 
-    let blend_state = BlendState::Off;
+    let blend_state = pfgpu::BlendStateOff;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -455,15 +363,93 @@ pub unsafe fn create_solid_tile_monochrome_pipeline(
     }
 }
 
-pub unsafe fn create_alpha_tile_multicolor_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &<Backend as hal::Backend>::PipelineLayout,
-    resources: &dyn resources::ResourceLoader,
+pub unsafe fn create_solid_tile_monochrome_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
+    let shader_name = String::from("tile_solid_monochrome");
 
-    let shader_name = String::new("tile_alpha_multicolor");
-    
+    let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
+        // quad_vertex_positions_buffer
+        hal::pso::VertexBufferDesc {
+            binding: 0,
+            stride: 0,
+            rate: hal::pso::VertexInputRate::Vertex,
+        },
+        // solid_multicolor_vertex_buffer
+        hal::pso::VertexBufferDesc {
+            binding: 1,
+            stride: SOLID_TILE_INSTANCE_SIZE,
+            rate: hal::pso::VertexInputRate::Vertex,
+        },
+    ];
+
+    let attributes: Vec<hal::pso::AttributeDesc> = {
+        let quad_vertex_positions_buffer_cursor: u32 = 0;
+        let solid_multicolor_vertex_buffer_cursor: u32 = 0;
+
+        let (quad_vertex_positions_buffer_cursor, tess_coord_attribute_desc) =
+            generate_tess_coord_attribute_desc(0, 0, quad_vertex_positions_buffer_cursor, 2);
+        let (solid_multicolor_vertex_buffer_cursor, tile_origin_attribute_desc) =
+            generate_solid_tile_origin_attribute_desc(
+                1,
+                1,
+                solid_multicolor_vertex_buffer_cursor,
+                2,
+            );
+        let (solid_multicolor_vertex_buffer_cursor, object_attribute_desc) =
+            generate_object_attribute_desc(1, 2, solid_multicolor_vertex_buffer_cursor, 1);
+
+        vec![
+            tess_coord_attribute_desc,
+            tile_origin_attribute_desc,
+            object_attribute_desc,
+        ]
+    };
+
+    let rasterizer = hal::pso::Rasterizer {
+        depth_clamping: false,
+        polygon_mode: hal::pso::PolygonMode::Fill,
+        cull_face: hal::pso::Face::NONE,
+        front_face: hal::pso::FrontFace::CounterClockwise,
+        depth_bias: None,
+        conservative: false,
+    };
+
+    let depth_stencil = hal::pso::DepthStencilDesc {
+        depth: hal::pso::DepthTest::Off,
+        depth_bounds: false,
+        stencil: generate_stencil_test(pfgpu::StencilFuncEqual, 1, 1, false),
+    };
+
+    let blend_state = pfgpu::BlendStateOff;
+
+    let baked_states = hal::pso::BakedStates {
+        viewport: Some(hal::pso::Viewport {
+            rect: extent.to_extent().rect(),
+            depth: (0.0..1.0),
+        }),
+        scissor: Some(extent.to_extent().rect()),
+        blend_color: None,
+        depth_bounds: None,
+    };
+
+    pfgpu::pipeline::PipelineDesc {
+        size,
+        shader_name,
+        vertex_buffer_descriptions,
+        attribute_descriptions,
+        rasterizer,
+        depth_stencil,
+        blend_state,
+        baked_states,
+    }
+}
+
+pub unsafe fn create_alpha_tile_multicolor_pipeline_description(
+    size: pfgeom::basic::point::Point2DI32,
+) -> pfgpu::pipeline::PipelineDesc {
+    let shader_name = String::from("tile_alpha_multicolor");
+
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // quad_vertex_positions_buffer
         hal::pso::VertexBufferDesc {
@@ -520,10 +506,10 @@ pub unsafe fn create_alpha_tile_multicolor_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: hal::pso::DepthTest::Off,
         depth_bounds: false,
-        stencil: generate_stencil_test(StencilFunc::Equal, 1, 1, false),
+        stencil: generate_stencil_test(pfgpu::StencilFuncEqual, 1, 1, false),
     };
 
-    let blend_state = BlendState::RGBOneAlphaOneMinusSrcAlpha;
+    let blend_state = pfgpu::BlendStateRGBOneAlphaOneMinusSrcAlpha;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -547,16 +533,11 @@ pub unsafe fn create_alpha_tile_multicolor_pipeline(
     }
 }
 
-
-pub unsafe fn create_alpha_tile_monochrome_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn resources::ResourceLoader,
+pub unsafe fn create_alpha_tile_monochrome_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
+    let shader_name = String::from("tile_alpha_monochrome");
 
-    let shader_name = String::new("tile_alpha_monochrome");
-    
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // quad_vertex_positions_buffer
         hal::pso::VertexBufferDesc {
@@ -613,10 +594,10 @@ pub unsafe fn create_alpha_tile_monochrome_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: hal::pso::DepthTest::Off,
         depth_bounds: false,
-        stencil: generate_stencil_test(StencilFunc::Equal, 1, 1, false),
+        stencil: generate_stencil_test(pfgpu::StencilFuncEqual, 1, 1, false),
     };
 
-    let blend_state = BlendState::RGBOneAlphaOneMinusSrcAlpha;
+    let blend_state = pfgpu::BlendStateRGBOneAlphaOneMinusSrcAlpha;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -640,14 +621,11 @@ pub unsafe fn create_alpha_tile_monochrome_pipeline(
     }
 }
 
-pub unsafe fn create_postprocess_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn resources::ResourceLoader,
+pub unsafe fn create_postprocess_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
-    let shader_name = String::new("post");
-    
+    let shader_name = String::from("post");
+
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // quad_vertex_positions_buffer
         hal::pso::VertexBufferDesc {
@@ -684,7 +662,7 @@ pub unsafe fn create_postprocess_pipeline(
         stencil: hal::pso::StencilTest::Off,
     };
 
-    let blend_state = BlendState::Off;
+    let blend_state = pfgpu::BlendStateOff;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -708,15 +686,11 @@ pub unsafe fn create_postprocess_pipeline(
     }
 }
 
-
-pub unsafe fn create_stencil_pipeline(
-    device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &pipeline_layouts::DrawPipelineLayout,
-    resources: &dyn resources::ResourceLoader,
+pub unsafe fn create_stencil_pipeline_description(
     size: pfgeom::basic::point::Point2DI32,
 ) -> pfgpu::pipeline::PipelineDesc {
-    let shader_name = String::new("stencil");
-    
+    let shader_name = String::from("stencil");
+
     let vertex_buffers: Vec<hal::pso::VertexBufferDesc> = vec![
         // stencil_vertex_buffer
         hal::pso::VertexBufferDesc {
@@ -730,12 +704,7 @@ pub unsafe fn create_stencil_pipeline(
         let stencil_vertex_buffer_cursor: u32 = 0;
 
         let (stencil_vertex_buffer_cursor, position_attribute_desc) =
-            generate_stencil_position_attribute_desc(
-                0,
-                0,
-                stencil_vertex_buffer_cursor,
-                3,
-            );
+            generate_stencil_position_attribute_desc(0, 0, stencil_vertex_buffer_cursor, 3);
 
         vec![
             // called aPositions in shader, but has the same form
@@ -755,10 +724,10 @@ pub unsafe fn create_stencil_pipeline(
     let depth_stencil = hal::pso::DepthStencilDesc {
         depth: generate_depth_test_for_stencil_shader(),
         depth_bounds: false,
-        stencil: generate_stencil_test(StencilFunc::Always, 1, 1, true),
+        stencil: generate_stencil_test(pfgpu::StencilFuncAlways, 1, 1, true),
     };
 
-    let blend_state = BlendState::Off;
+    let blend_state = pfgpu::BlendStateOff;
 
     let baked_states = hal::pso::BakedStates {
         viewport: Some(hal::pso::Viewport {
@@ -781,6 +750,3 @@ pub unsafe fn create_stencil_pipeline(
         baked_states,
     }
 }
-
-
-
