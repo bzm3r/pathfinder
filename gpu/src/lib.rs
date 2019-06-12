@@ -23,12 +23,10 @@ extern crate shaderc;
 extern crate winit;
 
 use hal::{Instance, Surface, Capability, Device, QueueFamily, PhysicalDevice, };
-use crate::resources::ResourceLoader;
 use image as img_crate;
 use pathfinder_geometry as pfgeom;
 use pathfinder_simd as pfsimd;
-use rustache::HashBuilder;
-use rustache::Render;
+use takeable_option::Takeable;
 
 pub mod resources;
 pub mod pipeline;
@@ -36,25 +34,27 @@ pub mod render_pass;
 mod pipeline_state;
 mod batch_primitives;
 
+
 pub struct GpuState<'a> {
     instance: back::Instance,
     surface: <Backend as hal::Backend>::Surface,
     pub device: <Backend as hal::Backend>::Device,
     adapter: hal::Adapter<Backend>,
     queue_group: hal::queue::QueueGroup<Backend, hal::Graphics>,
-    pub extent: hal::window::Extent2D,
 
     command_pool: hal::CommandPool<Backend, hal::Graphics>,
-
-    fill_renderer: crate::pipeline_state::FillPipelineState<'a>,
-    draw_renderer: crate::pipeline_state::DrawRenderer<'a>,
+    draw_pipeline_state: crate::pipeline_state::DrawPipelineState<'a>,
 }
 
 impl<'a> GpuState<'a> {
-    pub unsafe fn new(window: &winit::Window, 
+    pub unsafe fn new(window: &'a winit::Window,
+                      resource_loader: &'a dyn resources::ResourceLoader,
                       instance_name: &str,
-                      fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, 
-                      draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, 
+                      fill_render_pass_description: crate::render_pass::RenderPassDescription,
+                      draw_render_pass_description: crate::render_pass::RenderPassDescription,
+                      postprocess_render_pass_description: crate::render_pass::RenderPassDescription,
+                      fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
+                      draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
                       postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
                       fill_pipeline_description: crate::pipeline::PipelineDescription,
                       tile_solid_monochrome_pipeline_description: crate::pipeline::PipelineDescription,
@@ -64,10 +64,11 @@ impl<'a> GpuState<'a> {
                       postprocess_pipeline_description: crate::pipeline::PipelineDescription,
                       stencil_pipeline_description: crate::pipeline::PipelineDescription,
                       fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
-                      max_quad_vertex_positions_buffer_size: usize,
-                      max_fill_vertex_buffer_size: usize,
-                      max_solid_tile_vertex_buffer_size: usize,
-                      mask_alpha_tile_vertex_buffer_size: usize) -> GpuState {
+                      max_quad_vertex_positions_buffer_size: u64,
+                      max_fill_vertex_buffer_size: u64,
+                      max_tile_vertex_buffer_size: u64,
+                      monochrome: bool,
+    ) -> GpuState<'a> {
 
         let instance = back::Instance::create(instance_name, 1);
 
@@ -75,21 +76,10 @@ impl<'a> GpuState<'a> {
 
         let mut adapter = GpuState::pick_adapter(&instance, &surface).unwrap();
 
-        let (device, queue_group) =
+        let (device, mut queue_group) =
             GpuState::create_device_with_graphics_queues(&mut adapter, &surface);
 
-
-        let draw_render_pass = GpuState::create_render_pass(&device, draw_render_pass_desc);
-        let postprocess_render_pass = GpuState::create_render_pass(&device, postprocess_render_pass_desc);
-
-        let swapchain_state= crate::pipeline_state::DrawPipelineState::new(&mut adapter, &device, &surface, &draw_render_pass, max_frames_in_flight, &command_pool);
-        let max_frames_in_flight = swapchain_state.max_frames_in_flight();
-
-        let in_flight_draw_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
-        let in_flight_fill_fences: Vec<<Backend as hal::Backend>::Fence> = 0..max_frames_in_flight.iter().map(|_| device.create_fence().unwrap()).collect();
-
-        let draw_pipeline_layout = crate::pipeline_state::PipelineLayoutState::new(&device, draw_descriptor_set_layout_bindings, draw_render_pass);
-        let postprocess_pipeline_layout = crate::pipeline_state::PipelineLayoutState::new(&device, postprocess_descriptor_set_layout_bindings, postprocess_render_pass);
+        let command_queue = &(queue_group.queues[0]);
 
         let mut command_pool = device
             .create_command_pool_typed(
@@ -98,8 +88,7 @@ impl<'a> GpuState<'a> {
             )
             .unwrap();
 
-        let fill_renderer = crate::pipeline_state::FillPipelineState::new(&adapter, &device, &fill_pipeline_layout, resources, &command_queue, &command_pool, &quad_vertex_positions_buffer, fill_framebuffer_size, max_fill_vertex_buffer_size as u64, &in_flight_fill_fences, swapchain_state.current_index_ref());
-        let draw_renderer = crate::pipeline_state::DrawPipelineState::new(&adapter, &device, &draw_pipeline_layout, resources, extent, &command_queue, &command_pool, &quad_vertex_positions_buffer, max_tile_vertex_buffer_size, monochrome);
+        let draw_pipeline_state = crate::pipeline_state::DrawPipelineState::new(&mut adapter, &device, &mut surface, window, resource_loader, command_queue, command_pool, max_quad_vertex_positions_buffer_size as u64, draw_render_pass_description, fill_render_pass_description, postprocess_render_pass_description, fill_descriptor_set_layout_bindings, draw_descriptor_set_layout_bindings, postprocess_descriptor_set_layout_bindings, fill_pipeline_description, tile_solid_multicolor_pipeline_description, tile_solid_monochrome_pipeline_description, tile_alpha_multicolor_pipeline_description, tile_alpha_monochrome_pipeline_description, stencil_pipeline_description, postprocess_pipeline_description, fill_framebuffer_size, max_fill_vertex_buffer_size, max_tile_vertex_buffer_size, monochrome);
 
         GpuState {
             instance,
@@ -107,12 +96,9 @@ impl<'a> GpuState<'a> {
             device,
             adapter,
             queue_group,
-            extent,
 
             command_pool,
-
-            fill_renderer,
-            draw_renderer,
+            draw_pipeline_state,
         }
     }
 
@@ -166,170 +152,17 @@ impl<'a> GpuState<'a> {
         (device, queue_group)
     }
 
-    unsafe fn create_swapchain(
-        adapter: &mut hal::Adapter<Backend>,
-        device: &<Backend as hal::Backend>::Device,
-        surface: &mut <Backend as hal::Backend>::Surface,
-        previous_swapchain: Option<<Backend as hal::Backend>::Swapchain>,
-        window: &winit::Window,
-    ) -> (
-        <Backend as hal::Backend>::Swapchain,
-        hal::window::Extent2D,
-        Vec<<Backend as hal::Backend>::Image>,
-        hal::format::Format,
-        usize,
-    ) {
-        let (capabilities, compatible_formats, _compatible_present_modes) =
-            surface.compatibility(&mut adapter.physical_device);
-
-        let draw_image_format = match compatible_formats {
-            None => hal::format::Format::Rgba8Srgb,
-            Some(formats) => match formats
-                .iter()
-                .find(|format| format.base_format().1 == hal::format::ChannelType::Srgb)
-                .cloned()
-            {
-                Some(srgb_format) => srgb_format,
-                None => formats
-                    .get(0)
-                    .cloned()
-                    .ok_or("Surface does not support any known format.")
-                    .unwrap(),
-            },
-        };
-
-        let extent = {
-            let window_client_area = window
-                .get_inner_size()
-                .unwrap()
-                .to_physical(window.get_hidpi_factor());
-
-            hal::window::Extent2D {
-                width: capabilities.extents.end.width.min(window_client_area.width as u32),
-                height: capabilities
-                    .extents
-                    .end
-                    .height
-                    .min(window_client_area.height as u32),
-            }
-        };
-
-        let swapchain_config = hal::window::SwapchainConfig::from_caps(&capabilities, draw_image_format, extent);
-
-        let (swapchain, draw_images) = device
-            .create_swapchain(surface, swapchain_config, previous_swapchain)
-            .unwrap();
-
-        (swapchain, extent, draw_images, draw_image_format, (capabilities.image_count.end - 1) as usize)
-    }
-
-    pub fn extent(&self) -> pfgeom::basic::rect::RectI32 {
-        let origin = pfgeom::basic::point::Point2DI32::default();
-        let size = pfgeom::basic::point::Point2DI32::new(self.extent.width as i32, self.extent.height as i32);
-        pfgeom::basic::rect::RectI32::new(origin, size)
-    }
-
-    fn create_synchronizers(
-        device: &<Backend as hal::Backend>::Device,
-        max_frames_in_flight: usize,
-    ) -> (
-        Vec<<Backend as hal::Backend>::Semaphore>,
-        Vec<<Backend as hal::Backend>::Semaphore>,
-        Vec<<Backend as hal::Backend>::Fence>,
-    ) {
-        let mut image_available_semaphores: Vec<<Backend as hal::Backend>::Semaphore> = Vec::new();
-        let mut render_finished_semaphores: Vec<<Backend as hal::Backend>::Semaphore> = Vec::new();
-        let mut in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = Vec::new();
-
-        for _ in 0..max_frames_in_flight {
-            image_available_semaphores.push(device.create_semaphore().unwrap());
-            render_finished_semaphores.push(device.create_semaphore().unwrap());
-            in_flight_fences.push(device.create_fence(true).unwrap());
-        }
-
-        (
-            image_available_semaphores,
-            render_finished_semaphores,
-            in_flight_fences,
-        )
-    }
-
-    unsafe fn create_image_views(
-        device: &<Backend as hal::Backend>::Device,
-        images: &Vec<<Backend as hal::Backend>::Image>,
-        requested_format: hal::format::Format,
-    ) -> Vec<<Backend as hal::Backend>::ImageView> {
-        images
-            .into_iter()
-            .map(|image| {
-                device
-                    .create_image_view(
-                        &image,
-                        hal::image::ViewKind::D2,
-                        requested_format,
-                        hal::format::Swizzle::NO,
-                        hal::image::SubresourceRange {
-                            aspects: hal::format::Aspects::COLOR,
-                            levels: 0..1,
-                            layers: 0..1,
-                        },
-                    )
-                    .unwrap()
-            })
-            .collect()
-    }
-
-    pub unsafe fn create_framebuffer(&mut self,
-        render_pass: &<Backend as hal::Backend>::RenderPass,
-        image: Image,
-    ) -> Framebuffer {
-        let image_view = self.device
-            .create_image_view(
-                texture,
-                hal::image::ViewKind::D2,
-                TextureFormat::to_hal_format(texture_format),
-                hal::format::Swizzle::NO,
-                hal::image::SubresourceRange {
-                    aspects: hal::format::Aspects::COLOR,
-                    levels: 0..1,
-                    layers: 0..1,
-                },
-            );
-
-        let framebuffer = self
-            .device
-            .create_framebuffer(
-                render_pass,
-                vec![image_view],
-                hal::image::Extent {
-                    width: texture_size.x() as u32,
-                    height: texture_size.y() as u32,
-                    depth: 1,
-                },
-            );
-
-        Framebuffer {
-            framebuffer,
-            image_view,
-            image,
-        }
-    }
-
-    pub unsafe fn create_texture_from_png(&mut self, resources: &dyn ResourceLoader, name: &str)  -> Image {
+    pub unsafe fn create_texture_from_png(&mut self, resources: &dyn resources::ResourceLoader, name: &str)  -> Image {
         let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
         let image = img_crate::load_from_memory_with_format(&data, img_crate::ImageFormat::PNG).unwrap().to_luma();
         let pixel_size= std::mem::size_of::<img_crate::Luma<u8>>();
         let size = pfgeom::basic::point::Point2DI32::new(image.width() as i32, image.height() as i32);
 
-        img_crate::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.queue_group.queues[0], size, pixel_size, &data)
-    }
-
-    pub unsafe fn upload_data_to_buffer<T>(&self, data: &[T]) where T: Copy {
-        buffer.upload_data::<T>(&self.device, data);
+        Image::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.queue_group.queues[0], size, pixel_size, &data)
     }
 }
 
-fn load_shader_include(resources: &dyn ResourceLoader, include_name: &str) -> String {
+fn load_shader_include(resources: &dyn resources::ResourceLoader, include_name: &str) -> String {
     let resource = resources
         .slurp(&format!("shaders/{}.inc.glsl", include_name))
         .unwrap();
@@ -412,7 +245,7 @@ pub enum Primitive {
 #[derive(Clone, Copy, Default)]
 pub struct ClearParams {
     pub color: Option<pfgeom::color::ColorF>,
-    pub rect: Option<pfgeom::basic::RectI32>,
+    pub rect: Option<pfgeom::basic::rect::RectI32>,
     pub depth: Option<f32>,
     pub stencil: Option<u8>,
 }
@@ -446,51 +279,44 @@ impl Default for DepthFunc {
 
 impl UniformData {
     #[inline]
-    pub fn from_transform_3d(transform: &pfgeom::basic::Transform3DF32) -> UniformData {
+    pub fn from_transform_3d(transform: &pfgeom::basic::transform3d::Transform3DF32) -> UniformData {
         UniformData::Mat4([transform.c0, transform.c1, transform.c2, transform.c3])
     }
 }
 
 pub enum Memory<'a> {
-    Reference(&'a <Backend as hal::Backend>::Memory),
+    Reference(u64, hal::MemoryTypeId, &'a <Backend as hal::Backend>::Memory),
     Direct(<Backend as hal::Backend>::Memory),
 }
 
 pub struct Buffer<'a>{
+    device: &'a <Backend as hal::Backend>::Device,
     usage: hal::buffer::Usage,
     buffer_size: u64,
     memory: Memory<'a>,
     requirements: hal::memory::Requirements,
     buffer: <Backend as hal::Backend>::Buffer,
-    fence: &'a <Backend as hal::Backend>::Fence,
+    fence: Takeable<&'a <Backend as hal::Backend>::Fence>,
 }
 
 impl<'a> Buffer<'a> {
-    pub unsafe fn upload_data<T>(&self, device: &<Backend as hal::Backend>::Device, data: &[T]) where T: Copy {
-        assert!(data.len() <= self.buffer_size as usize);
-        let mut writer = device
-            .acquire_mapping_writer::<T>(&self.memory, 0..self.requirements.size)
-            .unwrap();
-        writer[0..data.len()].copy_from_slice(data);
-        device.release_mapping_writer(writer).unwrap();
-    }
-
-    unsafe fn new<'a>(
+    unsafe fn new(
         adapter: &hal::Adapter<Backend>,
-        device: &<Backend as hal::Backend>::Device,
+        device: &'a <Backend as hal::Backend>::Device,
         buffer_size: u64,
         usage: hal::buffer::Usage,
-        memory_ref: Option<(u64, &'a <Backend as hal::Backend>::Memory)>,
+        memory: Option<Memory<'a>>,
+        fence: Option<&'a <Backend as hal::Backend>::Fence>,
     ) -> Buffer<'a> {
-        let buffer = device.create_buffer(buffer_size, usage).unwrap();
-        let fence = device.create_fence().unwrap();
+        let mut buffer = device.create_buffer(buffer_size, usage).unwrap();
+        let requirements = device.get_buffer_requirements(&mut buffer);
 
-        let requirements = device.get_buffer_requirements(&pool[0]);
-
-        let memory = match memory_ref {
-            Some((offset, mref)) => {
-                device.bind_buffer_memory(mref, offset, buffer).unwrap();
-                Memory::Reference(mref)
+        let memory = match memory {
+            Some(Memory::Reference(offset, mid, mref)) => {
+                let memory_type = adapter.physical_device.memory_properties().memory_types[mid.0];
+                assert!(requirements.type_mask & (1 << mid.0) != 0 && memory_type.properties.contains(hal::memory::Properties::CPU_VISIBLE));
+                device.bind_buffer_memory(mref, offset, &mut buffer).unwrap();
+                Memory::Reference(offset, mid, mref)
             },
             None => {
                 let memory_type_id = adapter
@@ -510,33 +336,79 @@ impl<'a> Buffer<'a> {
                     .unwrap();
 
                 let mem = device
-                    .allocate_memory(memory_type_id, (num_buffers as u64)*buffer_size)
+                    .allocate_memory(memory_type_id, buffer_size)
                     .unwrap();
 
-                device.bind_buffer_memory(&mem, 0, buffer).unwrap();
+                device.bind_buffer_memory(&mem, 0, &mut buffer).unwrap();
                 Memory::Direct(mem)
             }
         };
 
         Buffer {
+            device,
             usage,
             buffer_size,
             memory,
             requirements,
             buffer,
-            fence,
+            fence: match fence {
+                Some(f) => Takeable::new(f),
+                _ => Takeable::new_empty(),
+            },
         }
-    }
-
-    pub fn set_fence(&mut self, new_fence: &'a <Backend as hal::Backend>::Fence) {
-        self.fence = new_fence;
     }
 
     pub fn buffer(&self) -> &<Backend as hal::Backend>::Buffer {
         &self.buffer
     }
-    pub fn fence(&self) -> &<Backend as hal::Backend>::Fence {
-        self.fence
+
+    pub unsafe fn upload_data<T>(&mut self, device: &<Backend as hal::Backend>::Device, data: &[T], fence: Option<&'a <Backend as hal::Backend>::Fence>) where T: Copy {
+        assert!(data.len() <= self.buffer_size as usize);
+
+        let mref = match self.memory {
+            Memory::Direct(mem) => { &mem },
+            Memory::Reference(size, mid, mref) => { mref },
+        };
+
+        let mut writer = device
+            .acquire_mapping_writer::<T>(mref, 0..self.requirements.size)
+            .unwrap();
+        writer[0..data.len()].copy_from_slice(data);
+        device.release_mapping_writer(writer).unwrap();
+
+        match Takeable::try_take(&mut self.fence) {
+            Some(f) => {
+                assert!(self.device.wait_for_fence(f, 20).unwrap());
+            },
+            _ => {},
+        }
+
+        match fence {
+            Some(f) => {
+                Takeable::insert(&mut self.fence, f);
+            },
+            _ => {},
+        }
+    }
+
+    pub fn is_free(&mut self, timeout_ns: u64) -> bool {
+        match Takeable::try_take(&mut self.fence) {
+            Some(f) => {
+                self.device.wait_for_fence(f, timeout_ns).unwrap()
+            },
+            _ => true,
+        }
+    }
+
+    pub fn memory_ref(&self) -> &<Backend as hal::Backend>::Memory {
+        match self.memory {
+            Memory::Reference(_, _, mref) => {
+                mref
+            },
+            Memory::Direct(mem) => {
+                &mem
+            }
+        }
     }
 
     unsafe fn destroy_buffer(device: &<Backend as hal::Backend>::Device, buffer: Buffer){
@@ -544,7 +416,7 @@ impl<'a> Buffer<'a> {
         device.destroy_buffer(buf);
 
         match mem {
-            Memory::Reference(_) => {},
+            Memory::Reference(_, _, _) => {},
             Memory::Direct(m) => { device.free_memory(m); }
         }
     }
@@ -558,22 +430,20 @@ struct RawBufferPool<'a> {
     buffer_size: u64,
     memory: <Backend as hal::Backend>::Memory,
     requirements: hal::memory::Requirements,
-    current_frame_index: &'a usize,
+    pub submission_list: Vec<(std::ops::Range<hal::VertexCount>, std::ops::Range<hal::InstanceCount>, usize)>,
 }
 
 impl<'a> RawBufferPool<'a> {
-    pub unsafe fn new<'a>(
+    pub unsafe fn new(
         adapter: &hal::Adapter<Backend>,
         device: &'a <Backend as hal::Backend>::Device,
         buffer_size: u64,
         num_buffers: u8,
         usage: hal::buffer::Usage,
-        current_frame_index: &'a usize,
-    ) -> RawBufferPool {
-        let mut pool: Vec<<Backend as hal::Backend>::BufferPool> = vec![];
-        let mut fences: Vec<<Backend as hal::Backend>::Fence> = vec![];
+    ) -> RawBufferPool<'a> {
+        let mut pool: Vec<Buffer> = vec![];
 
-        let dummy_buffer = device.create_buffer(buffer_size*(num_buffers as u64), usage);
+        let dummy_buffer = device.create_buffer(buffer_size*(num_buffers as u64), usage).unwrap();
         let requirements = device.get_buffer_requirements(&dummy_buffer);
         let memory_type_id = adapter
             .physical_device
@@ -596,7 +466,7 @@ impl<'a> RawBufferPool<'a> {
             .unwrap();
 
         for n in 0..(num_buffers as u64) {
-            pool.push(Buffer::new(adapter, device, buffer_size, usage, Some((n*buffer_size, &memory))));
+            pool.push(Buffer::new(adapter, device, buffer_size, usage, Some(Memory::Reference(n*buffer_size, memory_type_id, &memory)), None));
         }
 
         RawBufferPool {
@@ -607,56 +477,85 @@ impl<'a> RawBufferPool<'a> {
             buffer_size,
             memory,
             requirements,
-            current_frame_index,
+            submission_list: vec![],
         }
     }
 
-    pub unsafe fn upload_data<T>(&mut self, data: &[T]) -> Option<&<Backend as hal::Backend>::Buffer> where T: Copy  {
-        let buf = &self.pool[self.current_frame_index];
-        buf.upload_data(self.device, data);
-        buf.buffer()
+    pub unsafe fn get_free_buffer_index(&self) -> Option<usize> {
+        for (ix, buf) in self.pool.iter().enumerate() {
+            if buf.is_free(5) {
+                return Some(ix);
+            }
+        }
+
+        None
+    }
+
+    pub unsafe fn upload_data<T>(&mut self, data: &[T], vertices: std::ops::Range<hal::VertexCount>, instances: std::ops::Range<hal::InstanceCount>, fence: Option<&'a <Backend as hal::Backend>::Fence>) -> bool where T: Copy  {
+        if self.submission_list.len() == self.pool.len() {
+            false
+        } else {
+            let buf_index = {
+                let ix: usize;
+
+                loop {
+                    match self.get_free_buffer_index() {
+                        Some(ix) => {
+                            let ix = ix;
+                            break;
+                        }
+                        _ => { continue; }
+                    }
+                }
+
+                ix
+            };
+
+            self.pool[buf_index].upload_data(self.device, data, fence);
+            self.submission_list.push((vertices, instances, buf_index));
+            true
+        }
+    }
+
+    pub fn clear_submission_list(&mut self) {
+        self.submission_list.clear();
     }
 
     unsafe fn destroy_buffer_pool(device: &<Backend as hal::Backend>::Device, buffer: RawBufferPool){
         let RawBufferPool { pool: p, memory: mem, .. } = buffer;
         for b in p.into_iter() {
-            device.destroy_buffer(b);
+            Buffer::destroy_buffer(device, b);
         }
         device.free_memory(mem);
     }
 }
 
 pub struct VertexBufferPool<'a> {
+    pub buffer_size: u64,
     buffer_pool: RawBufferPool<'a>,
-    pub submission_list: Vec<(std::ops::Range<hal::VertexCount>, std::ops::Range<hal::InstanceCount>, &'a <Backend as hal::Backend>::Buffer)>,
-    current_frame_index: &'a usize,
 }
 
 impl<'a> VertexBufferPool<'a> {
-    pub unsafe fn new<'a>(
+    pub unsafe fn new(
         adapter: &hal::Adapter<Backend>,
         device: &'a <Backend as hal::Backend>::Device,
         buffer_size: u64,
         num_buffers: u8,
-        current_frame_index: &'a usize,
     ) -> VertexBufferPool<'a> {
-        let buffer_pool = RawBufferPool::new(adapter, device, buffer_size, num_buffers, hal::buffer::Usage::VERTEX, current_frame_index);
+        let buffer_pool = RawBufferPool::new(adapter, device, buffer_size, num_buffers, hal::buffer::Usage::VERTEX);
 
         VertexBufferPool {
+            buffer_size,
             buffer_pool,
-            submission_list: vec![],
-            current_frame_index
         }
     }
 
-    pub unsafe fn submit_data_to_buffer<T>(&mut self, data: &[T], vertices: std::ops::Range<hal::VertexCount>, instances: std::ops::Range<hal::InstanceCount>) where T: Copy {
-        let buf= self.buffer_pool.upload_data(data).unwrap();
-        self.submission_list.push((vertices, instances, buf));
+    pub unsafe fn submit_data_to_buffer<T>(&mut self, data: &[T], vertices: std::ops::Range<hal::VertexCount>, instances: std::ops::Range<hal::InstanceCount>, fence: Option<&'a <Backend as hal::Backend>::Fence>) -> bool where T: Copy {
+        self.buffer_pool.upload_data(data, vertices, instances, fence)
     }
 
-    pub unsafe fn clear_submission_list(&mut self) {
-        self.submission_list.clear();
-
+    pub fn clear_submission_list(&mut self) {
+        self.buffer_pool.clear_submission_list();
     }
 
     pub unsafe fn destroy_vertex_buffer_pool(device: &<Backend as hal::Backend>::Device, vertex_buffer_pool: VertexBufferPool) {
@@ -726,13 +625,13 @@ impl Image {
     }
 
     unsafe fn new_from_data(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>, command_queue: &mut hal::CommandQueue<back::Backend, hal::Graphics>, size: pfgeom::basic::point::Point2DI32, texel_size: usize, data: &[u8]) -> Image {
-        let texture = img_crate::new(adapter, device, TextureFormat::R8, size);
+        let texture = Image::new(adapter, device, hal::format::Format::R8Uint, size);
 
         let staging_buffer =
-            Buffer::new(adapter, device, (size.x() * size.y()) as u64, hal::buffer::Usage::TRANSFER_SRC);
+            Buffer::new(adapter, device, (size.x() * size.y()) as u64, hal::buffer::Usage::TRANSFER_SRC, None, None);
 
         let mut writer = device
-            .acquire_mapping_writer::<u8>(&staging_buffer.memory, 0..staging_buffer.requirements.size)
+            .acquire_mapping_writer::<u8>(&staging_buffer.memory_ref(), 0..staging_buffer.requirements.size)
             .unwrap();
         writer[0..data.len()].copy_from_slice(data);
         device
@@ -841,7 +740,7 @@ impl Image {
     }
 
     pub fn size(&self) -> pfgeom::basic::point::Point2DI32 {
-        &self.size
+        self.size
     }
 }
 
@@ -854,13 +753,21 @@ pub struct Framebuffer {
 impl Framebuffer {
     pub unsafe fn new(adapter: &hal::Adapter<Backend>, device: &<Backend as hal::Backend>::Device, texture_format: hal::format::Format, size: pfgeom::basic::point::Point2DI32, render_pass: &<Backend as hal::Backend>::RenderPass) -> Framebuffer {
         let image = Image::new(adapter, device, texture_format, size);
-        let framebuffer = device.create_framebuffer(image, render_pass);
+
         let subresource_range = hal::image::SubresourceRange {
             aspects: hal::format::Aspects::COLOR,
             levels: 0..1,
             layers: 0..1,
         };
-        let image_view = device.create_image_view(&image, hal::image::ViewKind::D2, texture_format, hal::format::Swizzle::NO, subresource_range);
+        let image_view =
+            device.create_image_view(
+                &(image.image),
+                hal::image::ViewKind::D2,
+                texture_format,
+                hal::format::Swizzle::NO,
+                subresource_range).unwrap();
+
+        let framebuffer = device.create_framebuffer(render_pass, vec![&image_view], hal::image::Extent { width: size.x() as u32, height: size.y() as u32, depth: 1 }).unwrap();
 
         Framebuffer {
             framebuffer,
@@ -870,18 +777,18 @@ impl Framebuffer {
     }
 
     pub fn image(&self) -> &Image {
-        self.image.as_ref().unwrap()
+        &self.image
     }
 
     pub fn framebuffer(&self) -> &<Backend as hal::Backend>::Framebuffer {
-        self.framebuffer.as_ref().unwrap()
+        &self.framebuffer
     }
 
     pub unsafe fn destroy_framebuffer(device: &<Backend as hal::Backend>::Device, framebuffer: Framebuffer) {
         let Framebuffer { framebuffer: fb, image: img, image_view: imv} = framebuffer;
         device.destroy_image_view(imv);
         Image::destroy_image(device,img);
-        device.destroy_framebuffeR(fb);
+        device.destroy_framebuffer(fb);
     }
 }
 

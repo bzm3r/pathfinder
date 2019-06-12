@@ -11,7 +11,6 @@ dx12 = ["gfx-backend-dx12"]
 vulkan = ["gfx-backend-vulkan"]
 
 [dependencies]
-rustache = "0.1"
 gfx-hal = { version = "0.2", git = "https://github.com/gfx-rs/gfx", branch = "master" }
 env_logger = "0.5.12"
 shaderc = "0.3.16"

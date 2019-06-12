@@ -23,12 +23,8 @@ extern crate shaderc;
 extern crate winit;
 
 use hal::{Device};
-
-use crate::{resources, pipeline_state};
 use crate::{StencilFunc, BlendState};
 use pathfinder_geometry as pfgeom;
-
-use rustache;
 
 fn generate_stencil_test(
     func: StencilFunc,
@@ -150,7 +146,7 @@ pub enum ShaderKind {
 
 unsafe fn compose_shader_module(
     device: &<Backend as hal::Backend>::Device,
-    resources: &dyn resources::ResourceLoader,
+    resource_loader: &dyn crate::resources::ResourceLoader,
     name: &str,
     shader_kind: ShaderKind,
 ) -> <Backend as hal::Backend>::ShaderModule {
@@ -159,41 +155,9 @@ unsafe fn compose_shader_module(
         ShaderKind::Fragment => 'f',
     };
 
-    let source = resources
+    let source = resource_loader
         .slurp(&format!("shaders/{}.{}s.glsl", name, shader_kind_char))
         .unwrap();
-
-    let mut load_include_tile_alpha_vertex =
-        |_| crate::load_shader_include(resources, "tile_alpha_vertex");
-    let mut load_include_tile_monochrome =
-        |_| crate::load_shader_include(resources, "tile_monochrome");
-    let mut load_include_tile_multicolor =
-        |_| crate::load_shader_include(resources, "tile_multicolor");
-    let mut load_include_tile_solid_vertex =
-        |_| crate::load_shader_include(resources, "tile_solid_vertex");
-    let mut load_include_post_convolve = |_| crate::load_shader_include(resources, "post_convolve");
-    let mut load_include_post_gamma_correct =
-        |_| crate::load_shader_include(resources, "post_gamma_correct");
-    let template_input = rustache::HashBuilder::new()
-        .insert_lambda(
-            "include_tile_alpha_vertex",
-            &mut load_include_tile_alpha_vertex,
-        )
-        .insert_lambda("include_tile_monochrome", &mut load_include_tile_monochrome)
-        .insert_lambda("include_tile_multicolor", &mut load_include_tile_multicolor)
-        .insert_lambda(
-            "include_tile_solid_vertex",
-            &mut load_include_tile_solid_vertex,
-        )
-        .insert_lambda("include_post_convolve", &mut load_include_post_convolve)
-        .insert_lambda(
-            "include_post_gamma_correct",
-            &mut load_include_post_gamma_correct,
-        );
-
-    let mut output = std::io::Cursor::new(vec![]);
-    template_input.render(std::str::from_utf8(&source).unwrap(), &mut output).unwrap();
-    let source = output.into_inner();
 
     let mut compiler = shaderc::Compiler::new()
         .ok_or("shaderc not found!")
@@ -231,33 +195,14 @@ pub struct PipelineDescription {
 
 pub unsafe fn create_pipeline<'a>(
     device: &<Backend as hal::Backend>::Device,
-    pipeline_layout: &crate::pipeline_state::PipelineLayoutState,
-    resources: &dyn resources::ResourceLoader,
+    pipeline_layout_state: &crate::pipeline_state::PipelineLayoutState,
+    resource_loader: &dyn crate::resources::ResourceLoader,
     pipeline_description: PipelineDescription,
 ) -> <Backend as hal::Backend>::GraphicsPipeline {
-    let vertex_shader_module =
-        compose_shader_module(device, resources, &pipeline_description.shader_name, ShaderKind::Vertex);
-    let fragment_shader_module =
-        compose_shader_module(device, resources, &pipeline_description.shader_name, ShaderKind::Fragment);
-
-    let (vs_entry, fs_entry) = (
-        hal::pso::EntryPoint {
-            entry: "main",
-            module: &vertex_shader_module,
-            specialization: hal::pso::Specialization {
-                constants: std::borrow::Cow::Borrowed(&[]),
-                data: std::borrow::Cow::Borrowed(&[]),
-            },
-        },
-        hal::pso::EntryPoint {
-            entry: "main",
-            module: &fragment_shader_module,
-            specialization: hal::pso::Specialization {
-                constants: std::borrow::Cow::Borrowed(&[]),
-                data: std::borrow::Cow::Borrowed(&[]),
-            },
-        },
-    );
+    let vertex_shader_module: <Backend as hal::Backend>::ShaderModule =
+        compose_shader_module(device, resource_loader, &pipeline_description.shader_name, ShaderKind::Vertex);
+    let fragment_shader_module: <Backend as hal::Backend>::ShaderModule =
+        compose_shader_module(device, resource_loader, &pipeline_description.shader_name, ShaderKind::Fragment);
 
     let (vs_entry, fs_entry) = (
         hal::pso::EntryPoint {
@@ -297,25 +242,25 @@ pub unsafe fn create_pipeline<'a>(
         h: pipeline_description.size.y() as i16,
     };
 
-    let render_pass = pipeline_layout.get_render_pass();
-    let layout = pipeline_layout.get_layout();
+    let render_pass = pipeline_layout_state.render_pass();
+    let layout = pipeline_layout_state.pipeline_layout();
 
     let pipeline = {
-        let PipelineDescription { rasterizer, vertex_buffers, attributes, depth_stencil, baked_states, ..} = pipeline_description;
+        let PipelineDescription { rasterizer, vertex_buffer_descriptions, attribute_descriptions, depth_stencil, baked_states, ..} = pipeline_description;
         let desc = hal::pso::GraphicsPipelineDesc {
             shaders,
             rasterizer,
-            vertex_buffers,
-            attributes,
+            vertex_buffers: vertex_buffer_descriptions,
+            attributes: attribute_descriptions,
             input_assembler,
             blender,
             depth_stencil,
             multisampling: None,
             baked_states,
-            layout: pipeline_layout.get_layout(),
+            layout: pipeline_layout_state.pipeline_layout(),
             subpass: hal::pass::Subpass {
                 index: 0,
-                main_pass: pipeline_layout.get_render_pass(),
+                main_pass: pipeline_layout_state.render_pass(),
             },
             flags: hal::pso::PipelineCreationFlags::empty(),
             parent: hal::pso::BasePipeline::None,

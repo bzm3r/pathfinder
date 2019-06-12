@@ -10,8 +10,6 @@
 
 use pathfinder_geometry::basic::line_segment::{LineSegmentU4, LineSegmentU8};
 use pathfinder_geometry::basic::point::Point2DI32;
-use pathfinder_geometry::basic::rect::RectF32;
-use std::fmt::{Debug, Formatter, Result as DebugResult};
 
 #[derive(Clone, Debug)]
 pub struct PaintData {
