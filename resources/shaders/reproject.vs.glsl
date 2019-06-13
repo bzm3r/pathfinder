@@ -1,24 +1,17 @@
 #version {{version}}
 
-// pathfinder/resources/shaders/reproject.vs.glsl
-//
-// Copyright © 2019 The Pathfinder Project Developers.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 precision highp float;
 
-uniform mat4 uNewTransform;
+layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+    mat4 uNewTransform;
+} uniforms;
 
-in vec2 aPosition;
+layout(location = 0) in vec2 aPosition;
 
-out vec2 vTexCoord;
+layout(location = 0) out vec2 vTexCoord;
 
-void main() {
+void main(){
     vTexCoord = aPosition;
     gl_Position = uNewTransform * vec4(aPosition, 0.0, 1.0);
 }
+

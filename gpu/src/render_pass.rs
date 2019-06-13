@@ -20,6 +20,7 @@ use back::Backend;
 extern crate gfx_hal as hal;
 use hal::Device;
 
+#[derive(Clone)]
 pub struct RenderPassDescription {
     attachments: Vec<hal::pass::Attachment>,
     subpass_colors: Vec<hal::pass::AttachmentRef>,

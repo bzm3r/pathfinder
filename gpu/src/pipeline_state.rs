@@ -23,12 +23,12 @@ extern crate log;
 extern crate shaderc;
 extern crate winit;
 
-use hal::{Surface, Device, Swapchain};
+use hal::{Surface, Device, Swapchain, DescriptorPool};
+use hal::command::{RawCommandBuffer, IntoRawCommandBuffer};
 use pathfinder_geometry as pfgeom;
 use takeable_option::Takeable;
 
 pub struct SwapchainState {
-    swapchain_image_format: hal::format::Format,
     swapchain_images: Vec<<Backend as hal::Backend>::Image>,
     swapchain_image_views: Vec<<Backend as hal::Backend>::ImageView>,
     swapchain_framebuffers: Vec<<Backend as hal::Backend>::Framebuffer>,
@@ -52,7 +52,6 @@ impl SwapchainState {
         window: &winit::Window,
         surface: &mut <Backend as hal::Backend>::Surface,
         resource_loader: &dyn crate::resources::ResourceLoader,
-        command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>,
         draw_render_pass_description: crate::render_pass::RenderPassDescription,
         postprocess_render_pass_description: crate::render_pass::RenderPassDescription,
         draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
@@ -169,7 +168,6 @@ impl SwapchainState {
         let in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = (0..max_frames_in_flight).map(|_| device.create_fence(true).unwrap()).collect();
 
         SwapchainState {
-            swapchain_image_format,
             swapchain_images,
             swapchain_image_views,
             swapchain_framebuffers,
@@ -187,10 +185,13 @@ impl SwapchainState {
         }
     }
 
-    unsafe fn destroy_swapchain_state(device: &<Backend as hal::Backend>::Device, command_pool: &hal::CommandPool<back::Backend, hal::Graphics>, swapchain_state: SwapchainState) {
+    pub fn swapchain(&self) -> &<Backend as hal::Backend>::Swapchain {
+        &self.swapchain
+    }
+
+    unsafe fn destroy_swapchain_state(device: &<Backend as hal::Backend>::Device, command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>, swapchain_state: SwapchainState) {
         let SwapchainState {
             in_flight_fences,
-            swapchain_image_format,
             swapchain_images,
             swapchain_image_views,
             swapchain_framebuffers,
@@ -229,6 +230,10 @@ impl SwapchainState {
         for pl_s in vec![draw_pipeline_layout_state, postprocess_pipeline_layout_state].into_iter() {
             PipelineLayoutState::destroy_pipeline_layout_state(device, pl_s);
         }
+
+        device.destroy_swapchain(swapchain);
+
+        command_pool.reset();
     }
 }
 
@@ -249,10 +254,10 @@ pub struct DrawPipelineState<'a> {
     stencil_pipeline_description: crate::pipeline::PipelineDescription,
     postprocess_pipeline_description: crate::pipeline::PipelineDescription,
     swapchain_state: Takeable<SwapchainState>,
-    quad_vertex_positions_buffer_pool: crate::VertexBufferPool<'a>,
-    tile_solid_vertex_buffer_pool: crate::VertexBufferPool<'a>,
-    tile_alpha_vertex_buffer_pool: crate::VertexBufferPool<'a>,
-    stencil_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    quad_vertex_positions_buffer_pool: crate::BufferPool<'a>,
+    tile_solid_vertex_buffer_pool: crate::BufferPool<'a>,
+    tile_alpha_vertex_buffer_pool: crate::BufferPool<'a>,
+    stencil_vertex_buffer_pool: crate::BufferPool<'a>,
     fill_pipeline_state: FillPipelineState<'a>,
     monochrome: bool,
     command_queue: &'a hal::CommandQueue<back::Backend, hal::Graphics>,
@@ -292,29 +297,28 @@ impl<'a> DrawPipelineState<'a> {
 
         let mut command_pool = command_pool;
 
-        let swapchain_state = SwapchainState::new(adapter,
-                                            device,
-                                            window,
-                                            surface,
-                                            resource_loader,
-                                            &mut command_pool,
-                                            draw_render_pass_description,
-                                            postprocess_render_pass_description,
-                                            draw_descriptor_set_layout_bindings,
-                                            postprocess_descriptor_set_layout_bindings,
-                                            tile_solid_multicolor_pipeline_description,
-                                            tile_solid_monochrome_pipeline_description,
-                                            tile_alpha_multicolor_pipeline_description,
-                                            tile_alpha_monochrome_pipeline_description,
-                                            stencil_pipeline_description,
-                                            postprocess_pipeline_description);
+        let swapchain_state = Takeable::new(SwapchainState::new(adapter,
+                                                                device,
+                                                                window,
+                                                                surface,
+                                                                resource_loader,
+                                                                draw_render_pass_description,
+                                                                postprocess_render_pass_description,
+                                                                draw_descriptor_set_layout_bindings,
+                                                                postprocess_descriptor_set_layout_bindings,
+                                                                tile_solid_multicolor_pipeline_description,
+                                                                tile_solid_monochrome_pipeline_description,
+                                                                tile_alpha_multicolor_pipeline_description,
+                                                                tile_alpha_monochrome_pipeline_description,
+                                                                stencil_pipeline_description,
+                                                                postprocess_pipeline_description));
 
-        let quad_vertex_positions_buffer_pool= crate::VertexBufferPool::new(adapter, device, max_quad_vertex_positions_buffer_size, 1);
+        let quad_vertex_positions_buffer_pool= crate::BufferPool::new(adapter, device, max_quad_vertex_positions_buffer_size, 1, hal::buffer::Usage::VERTEX);
         let fill_pipeline_state = FillPipelineState::new(adapter, device, resource_loader, command_queue, &command_pool, &quad_vertex_positions_buffer_pool, fill_render_pass_description, fill_descriptor_set_layout_bindings, fill_pipeline_description, fill_framebuffer_size, max_fill_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8);
 
-        let tile_solid_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8);
-        let tile_alpha_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8);
-        let stencil_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, quad_vertex_positions_buffer_pool.buffer_size, swapchain_state.in_flight_fences.len() as u8);
+        let tile_solid_vertex_buffer_pool = crate::BufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8, hal::buffer::Usage::VERTEX);
+        let tile_alpha_vertex_buffer_pool = crate::BufferPool::new(adapter, device, max_tile_vertex_buffer_size, swapchain_state.in_flight_fences.len() as u8, hal::buffer::Usage::VERTEX);
+        let stencil_vertex_buffer_pool = crate::BufferPool::new(adapter, device, quad_vertex_positions_buffer_pool.buffer_size, swapchain_state.in_flight_fences.len() as u8, hal::buffer::Usage::VERTEX);
 
         DrawPipelineState {
             adapter,
@@ -332,7 +336,7 @@ impl<'a> DrawPipelineState<'a> {
             tile_alpha_monochrome_pipeline_description,
             stencil_pipeline_description,
             postprocess_pipeline_description,
-            swapchain_state: Takeable::new(swapchain_state),
+            swapchain_state,
             quad_vertex_positions_buffer_pool,
             tile_solid_vertex_buffer_pool,
             tile_alpha_vertex_buffer_pool,
@@ -361,38 +365,45 @@ impl<'a> DrawPipelineState<'a> {
         None
     }
 
-    unsafe fn recreate_swapchain(&mut self) {
+    unsafe fn destroy_swapchain_state(&mut self) {
         match Takeable::try_take(&mut self.swapchain_state) {
             Some(ss) => {
-                SwapchainState::destroy_swapchain_state(self.device, &self.command_pool, ss);
+                SwapchainState::destroy_swapchain_state(self.device, &mut self.command_pool, ss);
             },
             _ => {},
         }
+    }
 
-        self.swapchain_state = Takeable::new(SwapchainState::new(self.adapter,
+    unsafe fn create_swapchain(&mut self) -> SwapchainState {
+        SwapchainState::new(self.adapter,
                                                                  self.device,
                                                                  self.window,
                                                                  &mut self.surface,
                                                                  self.resource_loader,
-                                                                 &mut self.command_pool,
-                                                                 self.draw_render_pass_description,
-                                                                 self.postprocess_render_pass_description,
-                                                                 self.draw_descriptor_set_layout_bindings,
-                                                                 self.postprocess_descriptor_set_layout_bindings,
-                                                                 self.tile_solid_multicolor_pipeline_description,
-                                                                 self.tile_solid_monochrome_pipeline_description,
-                                                                 self.tile_alpha_multicolor_pipeline_description,
-                                                                 self.tile_alpha_monochrome_pipeline_description,
-                                                                 self.stencil_pipeline_description,
-                                                                 self.postprocess_pipeline_description,))
+                                                                 self.draw_render_pass_description.clone(),
+                                                                 self.postprocess_render_pass_description.clone(),
+                                                                 self.draw_descriptor_set_layout_bindings.clone(),
+                                                                 self.postprocess_descriptor_set_layout_bindings.clone(),
+                                                                 self.tile_solid_multicolor_pipeline_description.clone(),
+                                                                 self.tile_solid_monochrome_pipeline_description.clone(),
+                                                                 self.tile_alpha_multicolor_pipeline_description.clone(),
+                                                                 self.tile_alpha_monochrome_pipeline_description.clone(),
+                                                                 self.stencil_pipeline_description.clone(),
+                                                                 self.postprocess_pipeline_description.clone(),)
     }
 
-    pub unsafe fn present(&mut self, command_queue: &mut <Backend as hal::Backend>::CommandQueue) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError>  {
+    unsafe fn recreate_swapchain(&mut self) {
+        self.destroy_swapchain_state();
+
+        Takeable::insert(&mut self.swapchain_state, self.create_swapchain());
+    }
+
+    pub unsafe fn present(&mut self) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError>  {
         self.current_frame_index = self.request_free_frame_index().unwrap();
 
         let (image_index, _) = self.swapchain_state.swapchain.acquire_image(core::u64::MAX, None, Some(&self.swapchain_state.in_flight_fences[self.current_frame_index])).unwrap();
 
-        let present_result = self.swapchain_state.swapchain.present_nosemaphores(command_queue, image_index);
+        let present_result = self.swapchain_state.swapchain.present_nosemaphores(&mut self.command_queue, image_index);
 
         match  present_result {
             Ok(Some(_)) => {
@@ -405,7 +416,23 @@ impl<'a> DrawPipelineState<'a> {
     }
 
     pub unsafe fn destroy_draw_pipeline_state(device: &<Backend as hal::Backend>::Device, draw_pipeline_state: DrawPipelineState) {
-        unimplemented!()
+        draw_pipeline_state.destroy_swapchain_state();
+
+        let DrawPipelineState {
+            quad_vertex_positions_buffer_pool,
+            tile_solid_vertex_buffer_pool,
+            tile_alpha_vertex_buffer_pool,
+            stencil_vertex_buffer_pool,
+            fill_pipeline_state,
+            mut command_pool, ..} = draw_pipeline_state;
+
+        FillPipelineState::destroy_fill_pipeline_state(device, fill_pipeline_state);
+        crate::BufferPool::destroy_buffer_pool(device, quad_vertex_positions_buffer_pool);
+        crate::BufferPool::destroy_buffer_pool(device, tile_solid_vertex_buffer_pool);
+        crate::BufferPool::destroy_buffer_pool(device, tile_alpha_vertex_buffer_pool);
+        crate::BufferPool::destroy_buffer_pool(device, stencil_vertex_buffer_pool);
+
+        device.destroy_command_pool(command_pool.into_raw());
     }
 }
 
@@ -415,9 +442,9 @@ pub struct FillPipelineState<'a> {
     pipeline_layout_state: PipelineLayoutState,
     command_queue: &'a hal::CommandQueue<back::Backend, hal::Graphics>,
     command_pool: &'a hal::CommandPool<back::Backend, hal::Graphics>,
-    quad_vertex_positions_buffer_pool: &'a crate::VertexBufferPool<'a>,
+    quad_vertex_positions_buffer_pool: &'a crate::BufferPool<'a>,
     framebuffer: crate::Framebuffer,
-    fill_vertex_buffer_pool: crate::VertexBufferPool<'a>,
+    fill_vertex_buffer_pool: crate::BufferPool<'a>,
     fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
 }
 
@@ -427,7 +454,7 @@ impl<'a> FillPipelineState<'a> {
                       resource_loader: &dyn crate::resources::ResourceLoader,
                       command_queue: &'a hal::CommandQueue<back::Backend, hal::Graphics>,
                       command_pool: &'a hal::CommandPool<back::Backend, hal::Graphics>,
-                      quad_vertex_positions_buffer_pool: &'a crate::VertexBufferPool,
+                      quad_vertex_positions_buffer_pool: &'a crate::BufferPool,
                       fill_render_pass_description: crate::render_pass::RenderPassDescription,
                       fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
                       fill_pipeline_description: crate::pipeline::PipelineDescription,
@@ -441,7 +468,7 @@ impl<'a> FillPipelineState<'a> {
 
         let framebuffer = crate::Framebuffer::new(adapter, device, hal::format::Format::R16Sfloat, fill_framebuffer_size, pipeline_layout_state.render_pass());
 
-        let fill_vertex_buffer_pool = crate::VertexBufferPool::new(adapter, device, max_fill_vertex_buffer_size, fill_vertex_buffer_pool_size);
+        let fill_vertex_buffer_pool = crate::BufferPool::new(adapter, device, max_fill_vertex_buffer_size, fill_vertex_buffer_pool_size, hal::buffer::Usage::VERTEX);
 
         let pipeline = crate::pipeline::create_pipeline(device,
                                                         &pipeline_layout_state,
@@ -469,19 +496,18 @@ impl<'a> FillPipelineState<'a> {
         &self.pipeline
     }
 
-    pub unsafe fn upload_vertex_buffer_data<T>(&mut self, data: &[crate::batch_primitives::FillBatchPrimitive], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32, fence: Option<&<Backend as hal::Backend>::Fence>) {
-        self.fill_vertex_buffer_pool.submit_data_to_buffer(data, first_vertex..vertex_count, first_instance..instance_count, fence);
+    pub unsafe fn upload_vertex_buffer_data<T>(&mut self, data: &[crate::batch_primitives::FillBatchPrimitive], vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32, fence: Option<&'a <Backend as hal::Backend>::Fence>) {
+        self.fill_vertex_buffer_pool.upload_data(data, first_vertex..vertex_count, first_instance..instance_count, fence);
     }
 
     pub unsafe fn submit_fill_draws(&mut self) {
         let mut cmd_buffer = self.command_pool.acquire_command_buffer::<hal::command::OneShot>();
-
         cmd_buffer.begin();
 
         cmd_buffer.bind_graphics_pipeline(self.pipeline());
         cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout_state.pipeline_layout(), 0, self.pipeline_layout_state.descriptor_sets(), &[]);
 
-        cmd_buffer.begin_render_pass(self.pipeline_layout_state.render_pass(),
+        cmd_buffer.into_raw().begin_render_pass(self.pipeline_layout_state.render_pass(),
                                      self.framebuffer(),
                                      hal::pso::Rect {
                                          x: 0,
@@ -489,24 +515,19 @@ impl<'a> FillPipelineState<'a> {
                                          w: self.fill_framebuffer_size.x() as i16,
                                          h: self.fill_framebuffer_size.y() as i16,
                                      },
-                                     &[]);
+                                     &[],
+                                     hal::command::SubpassContents::Inline,);
 
         // TODO: quad vertex positions buffer pool
-        for (vertex_count, instance_count, buf) in self.fill_vertex_buffer_pool.submission_list.iter() {
-            cmd_buffer.bind_vertex_buffer(0, [(buf.buffer(), 0)]);
-            cmd_buffer.draw(vertex_count, instance_count);
+        for (vertex_count, instance_count, ix) in self.fill_vertex_buffer_pool.submission_list.into_iter() {
+            cmd_buffer.bind_vertex_buffers(0, vec![(self.fill_vertex_buffer_pool.get_buffer(ix).buffer(), 0)]);
+            cmd_buffer.into_raw().draw(vertex_count, instance_count);
         }
 
-        cmd_buffer.end_render_pass();
+        cmd_buffer.into_raw().end_render_pass();
         cmd_buffer.finish();
 
-        let submission = hal::queue::Submission {
-            command_buffers: [&cmd_buffer],
-            wait_semaphores: None,
-            signal_semaphores: None,
-        };
-
-        self.command_queue.submit(submission, None);
+        self.command_queue.submit_nosemaphores(vec![&cmd_buffer], None);
 
     }
 
@@ -516,18 +537,20 @@ impl<'a> FillPipelineState<'a> {
         crate::Framebuffer::destroy_framebuffer(device, fb);
         device.destroy_graphics_pipeline(pl);
         PipelineLayoutState::destroy_pipeline_layout_state(device, pls);
-        crate::VertexBufferPool::destroy_vertex_buffer_pool(device, fvb);
+        crate::BufferPool::destroy_buffer_pool(device, fvb);
     }
 }
 
 pub struct PipelineLayoutState {
     descriptor_set_layout: <Backend as hal::Backend>::DescriptorSetLayout,
     pipeline_layout: <Backend as hal::Backend>::PipelineLayout,
-    render_pass: Option<<Backend as hal::Backend>::RenderPass>,
+    render_pass: <Backend as hal::Backend>::RenderPass,
+    descriptor_pool: <Backend as hal::Backend>::DescriptorPool,
+    descriptor_sets: Vec<<Backend as hal::Backend>::DescriptorSet>,
 }
 
 impl PipelineLayoutState {
-    pub fn new(device: &<Backend as hal::Backend>::Device, descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, render_pass: <Backend as hal::Backend>::RenderPass) -> PipelineLayoutState {
+    pub fn new(device: &<Backend as hal::Backend>::Device, descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>, render_pass: <Backend as hal::Backend>::RenderPass, ) -> PipelineLayoutState {
         let immutable_samplers = Vec::<<Backend as hal::Backend>::Sampler>::new();
 
         let descriptor_set_layout  = device.create_descriptor_set_layout(descriptor_set_layout_bindings, immutable_samplers).unwrap();
@@ -536,15 +559,28 @@ impl PipelineLayoutState {
 
         let pipeline_layout = unsafe {
             device
-                .create_pipeline_layout([&descriptor_set_layout], push_constants)
+                .create_pipeline_layout(vec![&descriptor_set_layout], push_constants)
                 .unwrap()
         };
+
+        let descriptor_pool = device.create_descriptor_pool(descriptor_set_layout_bindings.len(), PipelineLayoutState::generate_descriptor_range_descs_from_layout_bindings(&descriptor_set_layout_bindings), hal::pso::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET).unwrap();
+
+        let descriptor_sets = vec![descriptor_pool.allocate_set(&descriptor_set_layout).unwrap()];
 
         PipelineLayoutState {
             pipeline_layout,
             descriptor_set_layout,
             render_pass,
+            descriptor_pool,
+            descriptor_sets,
         }
+    }
+
+    fn generate_descriptor_range_descs_from_layout_bindings(descriptor_set_layout_bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> Vec<hal::pso::DescriptorRangeDesc> {
+        descriptor_set_layout_bindings.iter().map(|dsl| hal::pso::DescriptorRangeDesc {
+            ty: dsl.ty,
+            count: dsl.count,
+        }).collect::<Vec<hal::pso::DescriptorRangeDesc>>()
     }
 
     pub fn pipeline_layout(&self) -> &<Backend as hal::Backend>::PipelineLayout {
@@ -559,11 +595,17 @@ impl PipelineLayoutState {
         &self.descriptor_set_layout
     }
 
+    fn descriptor_sets(&self) -> &Vec<<Backend as hal::Backend>::DescriptorSet> {
+        &self.descriptor_sets
+    }
+
     unsafe fn destroy_pipeline_layout_state(device: &<Backend as hal::Backend>::Device, pl_state: PipelineLayoutState){
-        let PipelineLayoutState { descriptor_set_layout: dsl, render_pass: rp, pipeline_layout: pl} = pl_state;
+        let PipelineLayoutState { descriptor_set_layout: dsl, render_pass: rp, pipeline_layout: pl, descriptor_sets: dss, descriptor_pool: dp} = pl_state;
 
         device.destroy_pipeline_layout(pl);
         device.destroy_render_pass(rp);
+        dp.free_sets(dss);
+        device.destroy_descriptor_pool(dp);
         device.destroy_descriptor_set_layout(dsl);
     }
 }

@@ -1,26 +1,19 @@
 #version {{version}}
-
-// pathfinder/resources/shaders/reproject.fs.glsl
-//
-// Copyright © 2019 The Pathfinder Project Developers.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 precision highp float;
 
-uniform mat4 uOldTransform;
-uniform sampler2D uTexture;
+layout(std140, set = 0, binding = 1) uniform struct UniformInputs {
+    mat4 uOldTransform;
+} uniforms;
 
-in vec2 vTexCoord;
+layout(std140, set = 0, binding = 2) uniform sampler2D uTexture;
 
-out vec4 oFragColor;
+layout(location = 0) in vec2 vTexCoord;
 
-void main() {
+layout(location = 0) out vec4 oFragColor;
+
+void main(){
     vec4 normTexCoord = uOldTransform * vec4(vTexCoord, 0.0, 1.0);
-    vec2 texCoord = ((normTexCoord.xy / normTexCoord.w) + 1.0) * 0.5;
+    vec2 texCoord =((normTexCoord . xy / normTexCoord . w)+ 1.0)* 0.5;
     oFragColor = texture(uTexture, texCoord);
 }
+

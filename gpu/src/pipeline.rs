@@ -49,7 +49,7 @@ fn generate_stencil_test(
             mask_write: mask_write,
             op_fail: hal::pso::StencilOp::Keep,
             op_depth_fail: hal::pso::StencilOp::Keep,
-            op_pass: hal::pso::StencilOp::Keep,
+            op_pass: op_pass,
             reference: hal::pso::State::Static(reference),
         },
         back: hal::pso::StencilFace {
@@ -62,7 +62,7 @@ fn generate_stencil_test(
             mask_write: mask_write,
             op_fail: hal::pso::StencilOp::Keep,
             op_depth_fail: hal::pso::StencilOp::Keep,
-            op_pass: hal::pso::StencilOp::Keep,
+            op_pass: op_pass,
             reference: hal::pso::State::Static(reference),
         },
     }
@@ -128,10 +128,9 @@ fn generate_blend_desc(blend_state: BlendState) -> hal::pso::BlendDesc {
             };
         }
         BlendState::Off => {
-            let blend_state = hal::pso::BlendState::Off;
             return hal::pso::BlendDesc {
                 logic_op: None,
-                targets: vec![],
+                targets: vec![hal::pso::ColorBlendDesc::EMPTY],
             };
         }
     }
@@ -182,6 +181,7 @@ unsafe fn compose_shader_module(
     shader_module
 }
 
+#[derive(Clone)]
 pub struct PipelineDescription {
     pub size: pfgeom::basic::point::Point2DI32,
     pub shader_name: String,
@@ -234,16 +234,6 @@ pub unsafe fn create_pipeline<'a>(
     let input_assembler = hal::pso::InputAssemblerDesc::new(hal::Primitive::TriangleList);
 
     let blender = generate_blend_desc(pipeline_description.blend_state);
-
-    let framebuffer_size_rect = hal::pso::Rect {
-        x: 0,
-        y: 0,
-        w: pipeline_description.size.x() as i16,
-        h: pipeline_description.size.y() as i16,
-    };
-
-    let render_pass = pipeline_layout_state.render_pass();
-    let layout = pipeline_layout_state.pipeline_layout();
 
     let pipeline = {
         let PipelineDescription { rasterizer, vertex_buffer_descriptions, attribute_descriptions, depth_stencil, baked_states, ..} = pipeline_description;

@@ -40,8 +40,7 @@ pub struct GpuState<'a> {
     surface: <Backend as hal::Backend>::Surface,
     pub device: <Backend as hal::Backend>::Device,
     adapter: hal::Adapter<Backend>,
-    queue_group: hal::queue::QueueGroup<Backend, hal::Graphics>,
-
+    command_queue: hal::CommandQueue<Backend, hal::Graphics>,
     command_pool: hal::CommandPool<Backend, hal::Graphics>,
     draw_pipeline_state: crate::pipeline_state::DrawPipelineState<'a>,
 }
@@ -79,23 +78,23 @@ impl<'a> GpuState<'a> {
         let (device, mut queue_group) =
             GpuState::create_device_with_graphics_queues(&mut adapter, &surface);
 
-        let command_queue = &(queue_group.queues[0]);
+        let command_queue = queue_group.queues.drain(0..1).next().unwrap();
 
-        let mut command_pool = device
+        let command_pool = device
             .create_command_pool_typed(
                 &queue_group,
                 hal::pool::CommandPoolCreateFlags::RESET_INDIVIDUAL,
             )
             .unwrap();
 
-        let draw_pipeline_state = crate::pipeline_state::DrawPipelineState::new(&mut adapter, &device, &mut surface, window, resource_loader, command_queue, command_pool, max_quad_vertex_positions_buffer_size as u64, draw_render_pass_description, fill_render_pass_description, postprocess_render_pass_description, fill_descriptor_set_layout_bindings, draw_descriptor_set_layout_bindings, postprocess_descriptor_set_layout_bindings, fill_pipeline_description, tile_solid_multicolor_pipeline_description, tile_solid_monochrome_pipeline_description, tile_alpha_multicolor_pipeline_description, tile_alpha_monochrome_pipeline_description, stencil_pipeline_description, postprocess_pipeline_description, fill_framebuffer_size, max_fill_vertex_buffer_size, max_tile_vertex_buffer_size, monochrome);
+        let draw_pipeline_state = crate::pipeline_state::DrawPipelineState::new(&mut adapter, &device, &mut surface, window, resource_loader, &command_queue, command_pool, max_quad_vertex_positions_buffer_size as u64, draw_render_pass_description, fill_render_pass_description, postprocess_render_pass_description, fill_descriptor_set_layout_bindings, draw_descriptor_set_layout_bindings, postprocess_descriptor_set_layout_bindings, fill_pipeline_description, tile_solid_multicolor_pipeline_description, tile_solid_monochrome_pipeline_description, tile_alpha_multicolor_pipeline_description, tile_alpha_monochrome_pipeline_description, stencil_pipeline_description, postprocess_pipeline_description, fill_framebuffer_size, max_fill_vertex_buffer_size, max_tile_vertex_buffer_size, monochrome);
 
         GpuState {
             instance,
             surface,
             device,
             adapter,
-            queue_group,
+            command_queue,
 
             command_pool,
             draw_pipeline_state,
@@ -158,7 +157,7 @@ impl<'a> GpuState<'a> {
         let pixel_size= std::mem::size_of::<img_crate::Luma<u8>>();
         let size = pfgeom::basic::point::Point2DI32::new(image.width() as i32, image.height() as i32);
 
-        Image::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.queue_group.queues[0], size, pixel_size, &data)
+        Image::new_from_data(&self.adapter, &self.device, &mut self.command_pool, &mut self.command_queue, size, pixel_size, &data)
     }
 }
 
@@ -318,7 +317,7 @@ impl<'a> Buffer<'a> {
                 device.bind_buffer_memory(mref, offset, &mut buffer).unwrap();
                 Memory::Reference(offset, mid, mref)
             },
-            None => {
+            _ => {
                 let memory_type_id = adapter
                     .physical_device
                     .memory_properties()
@@ -367,7 +366,7 @@ impl<'a> Buffer<'a> {
 
         let mref = match self.memory {
             Memory::Direct(mem) => { &mem },
-            Memory::Reference(size, mid, mref) => { mref },
+            Memory::Reference(_, _, mref) => { mref },
         };
 
         let mut writer = device
@@ -422,7 +421,7 @@ impl<'a> Buffer<'a> {
     }
 }
 
-struct RawBufferPool<'a> {
+struct BufferPool<'a> {
     device: &'a <Backend as hal::Backend>::Device,
     usage: hal::buffer::Usage,
     pool: Vec<Buffer<'a>>,
@@ -433,14 +432,14 @@ struct RawBufferPool<'a> {
     pub submission_list: Vec<(std::ops::Range<hal::VertexCount>, std::ops::Range<hal::InstanceCount>, usize)>,
 }
 
-impl<'a> RawBufferPool<'a> {
+impl<'a> BufferPool<'a> {
     pub unsafe fn new(
         adapter: &hal::Adapter<Backend>,
         device: &'a <Backend as hal::Backend>::Device,
         buffer_size: u64,
         num_buffers: u8,
         usage: hal::buffer::Usage,
-    ) -> RawBufferPool<'a> {
+    ) -> BufferPool<'a> {
         let mut pool: Vec<Buffer> = vec![];
 
         let dummy_buffer = device.create_buffer(buffer_size*(num_buffers as u64), usage).unwrap();
@@ -469,7 +468,7 @@ impl<'a> RawBufferPool<'a> {
             pool.push(Buffer::new(adapter, device, buffer_size, usage, Some(Memory::Reference(n*buffer_size, memory_type_id, &memory)), None));
         }
 
-        RawBufferPool {
+        BufferPool {
             device,
             usage,
             pool,
@@ -481,8 +480,8 @@ impl<'a> RawBufferPool<'a> {
         }
     }
 
-    pub unsafe fn get_free_buffer_index(&self) -> Option<usize> {
-        for (ix, buf) in self.pool.iter().enumerate() {
+    pub unsafe fn get_free_buffer_index(&mut self) -> Option<usize> {
+        for (ix, buf) in self.pool.iter_mut().enumerate() {
             if buf.is_free(5) {
                 return Some(ix);
             }
@@ -495,72 +494,34 @@ impl<'a> RawBufferPool<'a> {
         if self.submission_list.len() == self.pool.len() {
             false
         } else {
-            let buf_index = {
-                let ix: usize;
-
-                loop {
-                    match self.get_free_buffer_index() {
-                        Some(ix) => {
-                            let ix = ix;
-                            break;
-                        }
-                        _ => { continue; }
+            loop {
+                match self.get_free_buffer_index() {
+                    Some(ix) => {
+                        self.pool[ix].upload_data(self.device, data, fence);
+                        self.submission_list.push((vertices, instances, ix));
+                        break;
                     }
+                    _ => { continue; }
                 }
-
-                ix
-            };
-
-            self.pool[buf_index].upload_data(self.device, data, fence);
-            self.submission_list.push((vertices, instances, buf_index));
+            }
             true
         }
+    }
+
+    pub fn get_buffer(&self, ix: usize) -> &'a Buffer {
+        &(self.pool[ix])
     }
 
     pub fn clear_submission_list(&mut self) {
         self.submission_list.clear();
     }
 
-    unsafe fn destroy_buffer_pool(device: &<Backend as hal::Backend>::Device, buffer: RawBufferPool){
-        let RawBufferPool { pool: p, memory: mem, .. } = buffer;
+    unsafe fn destroy_buffer_pool(device: &<Backend as hal::Backend>::Device, buffer: BufferPool){
+        let BufferPool { pool: p, memory: mem, .. } = buffer;
         for b in p.into_iter() {
             Buffer::destroy_buffer(device, b);
         }
         device.free_memory(mem);
-    }
-}
-
-pub struct VertexBufferPool<'a> {
-    pub buffer_size: u64,
-    buffer_pool: RawBufferPool<'a>,
-}
-
-impl<'a> VertexBufferPool<'a> {
-    pub unsafe fn new(
-        adapter: &hal::Adapter<Backend>,
-        device: &'a <Backend as hal::Backend>::Device,
-        buffer_size: u64,
-        num_buffers: u8,
-    ) -> VertexBufferPool<'a> {
-        let buffer_pool = RawBufferPool::new(adapter, device, buffer_size, num_buffers, hal::buffer::Usage::VERTEX);
-
-        VertexBufferPool {
-            buffer_size,
-            buffer_pool,
-        }
-    }
-
-    pub unsafe fn submit_data_to_buffer<T>(&mut self, data: &[T], vertices: std::ops::Range<hal::VertexCount>, instances: std::ops::Range<hal::InstanceCount>, fence: Option<&'a <Backend as hal::Backend>::Fence>) -> bool where T: Copy {
-        self.buffer_pool.upload_data(data, vertices, instances, fence)
-    }
-
-    pub fn clear_submission_list(&mut self) {
-        self.buffer_pool.clear_submission_list();
-    }
-
-    pub unsafe fn destroy_vertex_buffer_pool(device: &<Backend as hal::Backend>::Device, vertex_buffer_pool: VertexBufferPool) {
-        let VertexBufferPool { buffer_pool: buf, .. } = vertex_buffer_pool;
-        RawBufferPool::destroy_buffer_pool(device, buf);
     }
 }
 
