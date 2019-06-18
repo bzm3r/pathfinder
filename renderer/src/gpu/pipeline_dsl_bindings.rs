@@ -10,9 +10,9 @@
 
 extern crate gfx_hal as hal;
 
-pub fn mask_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::DescriptorSetLayoutBinding> {
+pub fn fill_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::DescriptorSetLayoutBinding> {
     vec![
-        // uFramebufferSize
+        // UniformStructA
         hal::pso::DescriptorSetLayoutBinding {
             binding: 0,
             ty: hal::pso::DescriptorType::UniformBuffer,
@@ -20,17 +20,9 @@ pub fn mask_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
             stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-        // uTileSize
-        hal::pso::DescriptorSetLayoutBinding {
-            binding: 1,
-            ty: hal::pso::DescriptorType::UniformBuffer,
-            count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::VERTEX,
-            immutable_samplers: false,
-        },
         // uAreaLUT
         hal::pso::DescriptorSetLayoutBinding {
-            binding: 2,
+            binding: 1,
             ty: hal::pso::DescriptorType::CombinedImageSampler,
             count: 1,
             stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
@@ -41,7 +33,7 @@ pub fn mask_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
 
 pub fn draw_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::DescriptorSetLayoutBinding> {
     vec![
-        // uFramebufferSize
+        // UniformStructA
         hal::pso::DescriptorSetLayoutBinding {
             binding: 0,
             ty: hal::pso::DescriptorType::UniformBuffer,
@@ -49,7 +41,7 @@ pub fn draw_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
             stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-        // uTileSize
+        // UniformStructB
         hal::pso::DescriptorSetLayoutBinding {
             binding: 1,
             ty: hal::pso::DescriptorType::UniformBuffer,
@@ -57,7 +49,7 @@ pub fn draw_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
             stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-        // uViewboxOrigin
+        // UniformStructC
         hal::pso::DescriptorSetLayoutBinding {
             binding: 2,
             ty: hal::pso::DescriptorType::UniformBuffer,
@@ -65,7 +57,8 @@ pub fn draw_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
             stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-        // uStencilTextureSize;
+        // postprocessing related descriptor sets
+        // UniformStructD;
         hal::pso::DescriptorSetLayoutBinding {
             binding: 3,
             ty: hal::pso::DescriptorType::UniformBuffer,
@@ -73,52 +66,15 @@ pub fn draw_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::Descripto
             stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-    ]
-}
-
-pub fn create_postprocess_pipeline_descriptor_set_layout_bindings() -> Vec<hal::pso::DescriptorSetLayoutBinding> {
-    vec![
-        // uSourceSize
-        hal::pso::DescriptorSetLayoutBinding {
-            binding: 0,
-            ty: hal::pso::DescriptorType::UniformBuffer,
-            count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
-            immutable_samplers: false,
-        },
-        // uFGColor
-        hal::pso::DescriptorSetLayoutBinding {
-            binding: 1,
-            ty: hal::pso::DescriptorType::UniformBuffer,
-            count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
-            immutable_samplers: false,
-        },
-        // uBGColor
-        hal::pso::DescriptorSetLayoutBinding {
-            binding: 2,
-            ty: hal::pso::DescriptorType::UniformBuffer,
-            count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
-            immutable_samplers: false,
-        },
-        // uGammaCorrectionEnabled
-        hal::pso::DescriptorSetLayoutBinding {
-            binding: 3,
-            ty: hal::pso::DescriptorType::UniformBuffer,
-            count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
-            immutable_samplers: false,
-        },
-        // uSource (sampler2D)
+        // uPaintTexture
         hal::pso::DescriptorSetLayoutBinding {
             binding: 4,
             ty: hal::pso::DescriptorType::CombinedImageSampler,
             count: 1,
-            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
+            stage_flags: hal::pso::ShaderStageFlags::VERTEX,
             immutable_samplers: false,
         },
-        // uGammaLUT (sampler2D)
+        // uStencilTexture
         hal::pso::DescriptorSetLayoutBinding {
             binding: 5,
             ty: hal::pso::DescriptorType::CombinedImageSampler,
@@ -126,13 +82,22 @@ pub fn create_postprocess_pipeline_descriptor_set_layout_bindings() -> Vec<hal::
             stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
             immutable_samplers: false,
         },
-        // uKernel
+        // uSource
         hal::pso::DescriptorSetLayoutBinding {
             binding: 6,
-            ty: hal::pso::DescriptorType::UniformBuffer,
+            ty: hal::pso::DescriptorType::CombinedImageSampler,
+            count: 1,
+            stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
+            immutable_samplers: false,
+        },
+        // uGammaLUT
+        hal::pso::DescriptorSetLayoutBinding {
+            binding: 7,
+            ty: hal::pso::DescriptorType::CombinedImageSampler,
             count: 1,
             stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
             immutable_samplers: false,
         },
     ]
 }
+

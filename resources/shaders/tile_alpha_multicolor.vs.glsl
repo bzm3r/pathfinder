@@ -4,7 +4,7 @@
 
 precision highp float;
 
-layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+layout(std140, set = 0, binding = 0) uniform struct UniformStructA {
     vec2 uFramebufferSize;
     vec2 uTileSize;
     vec2 uStencilTextureSize;
@@ -13,7 +13,16 @@ layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
     vec2 uPaintTextureSize;
 } uniforms;
 
-layout(std140, set = 0, binding = 1) uniform sampler2D uPaintTexture;
+layout(std140, set = 0, binding = 1) uniform struct UniformStructB {
+    vec2 uPaintTextureSize;
+} uniforms;
+
+layout(std140, set = 0, binding = 2) uniform struct UniformStructC {
+    vec2 uStencilTextureSize;
+    vec4 uColor;
+} uniforms;
+
+layout(std140, set = 0, binding = 4) uniform sampler2D uPaintTexture;
 
 layout(location = 0) in vec2 aTessCoord;
 layout(location = 1) in uvec3 aTileOrigin;

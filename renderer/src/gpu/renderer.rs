@@ -27,8 +27,10 @@ use crate::gpu_data;
 use crate::post;
 use crate::pipelines;
 use core::borrow::BorrowMut;
+use crate::gpu::pipeline_descriptions::create_fill_pipeline_description;
 
 static QUAD_VERTEX_POSITIONS: [u8; 8] = [0, 0, 1, 0, 1, 1, 0, 1];
+static QUAD_VERTEX_INDICES: [u32; 6] = [0, 1, 3, 1, 2, 3];
 
 // FIXME(pcwalton): Shrink this again!
 const MASK_FRAMEBUFFER_WIDTH: i32 = tiles::TILE_WIDTH as i32 * 256;
@@ -47,15 +49,13 @@ const MAX_ALPHA_TILES_PER_BATCH: u64 = 0x4000;
 const MAX_SOLID_TILES_PER_BATCH: u64 = 0x4000;
 const MAX_POSTPROCESS_VERTICES: usize = 1; // what should this be?
 
-pub struct Renderer {
-    pub gpu_state: pfgpu::GpuState,
+pub struct Renderer<'a> {
+    pub gpu_state: pfgpu::GpuState<'a>,
 
     area_lut_texture: pfgpu::Image,
-    // Postprocessing shader
     gamma_lut_texture: pfgpu::Image,
 
     // Rendering state
-    mask_framebuffer_cleared: bool,
     buffered_fills: Vec<gpu_data::FillBatchPrimitive>,
     buffered_alpha_tiles: Vec<gpu_data::AlphaTileBatchPrimitive>,
     buffered_solid_tiles: Vec<gpu_data::SolidTileBatchPrimitive>,
@@ -70,8 +70,10 @@ impl Renderer {
         instance_name: &str,
         resources: &dyn pfresources::ResourceLoader,
     ) -> Renderer {
-        let area_lut_texture = device.create_texture_from_png(resources, "area-lut");
-        let gamma_lut_texture = device.create_texture_from_png(resources, "gamma-lut");
+        let mut gpu_state = pfgpu::GpuState::new(window, resource_laoder, "renderer", fill_render_pass_description, draw_render_pass_description, postprocess_render_pass_description, fill_descriptor_set_layout_bindings, draw_descriptor_set_layout_bindings, postprocess_descriptor_set_layout_bindings, fill_pipeline_description, tile_solid_monochrome_pipeline_description, tile_solid_multicolor_pipeline_description, tile_alpha_monochrome_pipeline_description, tile_alpha_multicolor_pipeline_description, postprocess_pipeline_description, stencil_pipeline_description, fill_framebuffer_size, max_quad_vertex_positions_buffer_size, max_fill_vertex_buffer_size, max_tile_vertex_buffer_size, monochrome);
+
+        let area_lut_texture = gpu_state.create_texture_from_png(resources, "area-lut");
+        let gamma_lut_texture = gpu_state.create_texture_from_png(resources, "gamma-lut");
 
         let quad_vertex_positions_buffer = device.create_vertex_buffer(QUAD_VERTEX_POSITIONS.len() as u64);
         device.upload_data(quad_vertex_positions_buffer, &QUAD_VERTEX_POSITIONS);
@@ -80,7 +82,6 @@ impl Renderer {
             gpu_state,
             area_lut_texture,
             gamma_lut_texture,
-            mask_framebuffer_cleared: false,
             buffered_fills: vec![],
             buffered_alpha_tiles: vec![],
             buffered_solid_tiles: vec![],
@@ -89,15 +90,12 @@ impl Renderer {
     }
 
     pub unsafe fn begin_scene(&mut self) {
-        self.init_postprocessing_framebuffer();
-
-        self.device.mask_framebuffer.set_clear_status(false);
+        // initialize postprocessing framebuffer
+        // clear postprocessing framebuffer
     }
 
     unsafe fn init_postprocessing_framebuffer(&mut self) {
-        if !self.postprocessing_needed() {
-            return;
-        }
+        // if postprocessing is needed, create relevant framebuffer/support
 
         let source_framebuffer_size = self.draw_viewport().size();
 
@@ -106,8 +104,7 @@ impl Renderer {
             ..pfgpu::ClearParams::default()
         };
 
-        // this should clear the image
-        self.device.create_postprocess_framebuffer(source_framebuffer_size, clear_params);
+
     }
 
     pub unsafe fn render_command(&mut self, command: &gpu_data::RenderCommand) {

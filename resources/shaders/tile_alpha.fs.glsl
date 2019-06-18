@@ -2,7 +2,7 @@
 
 precision highp float;
 
-layout(std140, set = 0, binding = 2) uniform sampler2D uStencilTexture;
+layout(std140, set = 0, binding = 5) uniform sampler2D uStencilTexture;
 
 layout(location = 0) in vec2 vTexCoord;
 layout(location = 1) in float vBackdrop;

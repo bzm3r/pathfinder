@@ -150,7 +150,7 @@ fn generate_alpha_tile_origin_attribute_desc(
     )
 }
 
-fn generate_object_attribute_desc(
+fn generate_color_tex_coord_attribute_desc(
     binding: u32,
     location: u32,
     offset: u32,
@@ -162,7 +162,7 @@ fn generate_object_attribute_desc(
             location,
             binding,
             element: hal::pso::Element {
-                format: hal::format::Format::R16Sint,
+                format: hal::format::Format::R16Unorm,
                 offset,
             },
         },
@@ -207,6 +207,7 @@ pub unsafe fn create_fill_pipeline_description(
             stride: 0, // tightly packed
             rate: hal::pso::VertexInputRate::Vertex,
         },
+        hal::pso::
         // fill_vertex_buffer
         hal::pso::VertexBufferDesc {
             binding: 1,
@@ -314,13 +315,17 @@ pub unsafe fn create_solid_tile_multicolor_pipeline_description(
                 solid_multicolor_vertex_buffer_cursor,
                 2,
             );
-        let (solid_multicolor_vertex_buffer_cursor, object_attribute_desc) =
-            generate_object_attribute_desc(1, 2, solid_multicolor_vertex_buffer_cursor, 1);
+        let (solid_multicolor_vertex_buffer_cursor, color_tex_coord_attribute_desc) =
+            generate_color_tex_coord_attribute_desc(
+                1, 
+                2, 
+                solid_multicolor_vertex_buffer_cursor, 
+                2);
 
         vec![
             tess_coord_attribute_desc,
             tile_origin_attribute_desc,
-            object_attribute_desc,
+            color_tex_coord_attribute_desc,
         ]
     };
 
@@ -396,13 +401,10 @@ pub unsafe fn create_solid_tile_monochrome_pipeline_description(
                 solid_multicolor_vertex_buffer_cursor,
                 2,
             );
-        let (solid_multicolor_vertex_buffer_cursor, object_attribute_desc) =
-            generate_object_attribute_desc(1, 2, solid_multicolor_vertex_buffer_cursor, 1);
 
         vec![
             tess_coord_attribute_desc,
             tile_origin_attribute_desc,
-            object_attribute_desc,
         ]
     };
 
@@ -479,18 +481,18 @@ pub unsafe fn create_alpha_tile_multicolor_pipeline_description(
                 3,
             );
         let (alpha_multicolor_vertex_buffer_cursor, backdrop_attribute_desc) =
-            generate_backdrop_attribute_desc(1, 1, alpha_multicolor_vertex_buffer_cursor, 1);
-        let (alpha_multicolor_vertex_buffer_cursor, object_attribute_desc) =
-            generate_object_attribute_desc(1, 1, alpha_multicolor_vertex_buffer_cursor, 2);
+            generate_backdrop_attribute_desc(1, 2, alpha_multicolor_vertex_buffer_cursor, 1);
         let (alpha_multicolor_vertex_buffer_cursor, tile_index_attribute_desc) =
-            generate_tile_index_attribute_desc(1, 2, alpha_multicolor_vertex_buffer_cursor, 2);
+            generate_tile_index_attribute_desc(1, 3, alpha_multicolor_vertex_buffer_cursor, 2);
+        let (alpha_multicolor_vertex_buffer_cursor, color_tex_coord_attribute_desc) =
+            generate_color_tex_coord_attribute_desc(1, 4, alpha_multicolor_vertex_buffer_cursor, 2);
 
         vec![
             tess_coord_attribute_desc,
             tile_origin_attribute_desc,
             backdrop_attribute_desc,
-            object_attribute_desc,
             tile_index_attribute_desc,
+            color_tex_coord_attribute_desc,
         ]
     };
 
@@ -567,17 +569,14 @@ pub unsafe fn create_alpha_tile_monochrome_pipeline_description(
                 3,
             );
         let (alpha_multicolor_vertex_buffer_cursor, backdrop_attribute_desc) =
-            generate_backdrop_attribute_desc(1, 1, alpha_multicolor_vertex_buffer_cursor, 1);
-        let (alpha_multicolor_vertex_buffer_cursor, object_attribute_desc) =
-            generate_object_attribute_desc(1, 1, alpha_multicolor_vertex_buffer_cursor, 1);
+            generate_backdrop_attribute_desc(1, 2, alpha_multicolor_vertex_buffer_cursor, 1);
         let (alpha_multicolor_vertex_buffer_cursor, tile_index_attribute_desc) =
-            generate_tile_index_attribute_desc(1, 2, alpha_multicolor_vertex_buffer_cursor, 1);
+            generate_tile_index_attribute_desc(1, 3, alpha_multicolor_vertex_buffer_cursor, 1);
 
         vec![
             tess_coord_attribute_desc,
             tile_origin_attribute_desc,
             backdrop_attribute_desc,
-            object_attribute_desc,
             tile_index_attribute_desc,
         ]
     };

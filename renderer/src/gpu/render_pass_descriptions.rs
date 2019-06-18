@@ -24,10 +24,13 @@ pub fn create_fill_render_pass_desc() -> pfgpu::render_pass::RenderPassDescripti
         layouts: hal::image::Layout::Undefined..hal::image::Layout::ShaderReadOnlyOptimal,
     };
 
+
     pfgpu::render_pass::RenderPassDescription {
         attachments: vec![mask_texture],
-        subpass_colors: vec![(0, hal::image::Layout::ColorAttachmentOptimal)],
-        subpass_inputs: vec![],
+        num_subpasses: 1,
+        colors_per_subpass: vec![vec![(0, hal::image::Layout::ColorAttachmentOptimal)],],
+        inputs_per_subpass: vec![Vec::<hal::pass::AttachmentRef>::new(),],
+        preserves_per_subpass: vec![Vec::<hal::pass::AttachmentId>::new(),],
     }
 }
 
@@ -36,7 +39,52 @@ pub fn create_draw_pass_desc() -> pfgpu::render_pass::RenderPassDescription {
         format: Some(hal::format::Format::R16Sfloat),
         samples: 0,
         ops: hal::pass::AttachmentOps {
+            load: hal::pass::AttachmentLoadOp::Load,
+            store: hal::pass::AttachmentStoreOp::Store,
+        },
+        stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+        layouts: hal::image::Layout::ShaderReadOnlyOptimal..hal::image::Layout::ShaderReadOnlyOptimal,
+    };
+
+    // format field will be will be filled out by GpuState based on swapchain image format
+    let transient = hal::pass::Attachment {
+        format: None,
+        samples: 0,
+        ops: hal::pass::AttachmentOps {
             load: hal::pass::AttachmentLoadOp::Clear,
+            store: hal::pass::AttachmentStoreOp::Store,
+        },
+        stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+        layouts: hal::image::Layout::Undefined..hal::image::Layout::ShaderReadOnlyOptimal,
+    };
+
+    // format field will be will be filled out by GpuState based on swapchain image format
+    let dest = hal::pass::Attachment {
+        format: None,
+        samples: 0,
+        ops: hal::pass::AttachmentOps {
+            load: hal::pass::AttachmentLoadOp::Clear,
+            store: hal::pass::AttachmentStoreOp::Store,
+        },
+        stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+        layouts: hal::image::Layout::Undefined..hal::image::Layout::Present,
+    };
+
+    pfgpu::render_pass::RenderPassDescription {
+        attachments: vec![fill_texture, transient, dest],
+        num_subpasses: 2,
+        inputs_per_subpass: vec![vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)], vec![(1, hal::image::Layout::ShaderReadOnlyOptimal)],],
+        colors_per_subpass: vec![vec![(1, hal::image::Layout::ColorAttachmentOptimal)], vec![(2, hal::image::Layout::Present)],],
+        preserves_per_subpass: vec![Vec::<hal::pass::AttachmentId>::new(), Vec::<hal::pass::AttachmentId>::new()],
+    }
+}
+
+pub fn create_draw_pass_no_postprocess_desc() -> pfgpu::render_pass::RenderPassDescription {
+    let fill_texture = hal::pass::Attachment {
+        format: Some(hal::format::Format::R16Sfloat),
+        samples: 0,
+        ops: hal::pass::AttachmentOps {
+            load: hal::pass::AttachmentLoadOp::Load,
             store: hal::pass::AttachmentStoreOp::Store,
         },
         stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
@@ -52,33 +100,15 @@ pub fn create_draw_pass_desc() -> pfgpu::render_pass::RenderPassDescription {
             store: hal::pass::AttachmentStoreOp::Store,
         },
         stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
-        layouts: hal::image::Layout::Undefined..hal::image::Layout::ColorAttachmentOptimal,
+        layouts: hal::image::Layout::Undefined..hal::image::Layout::Present,
     };
 
     pfgpu::render_pass::RenderPassDescription {
-        attachments: vec![dest],
-        subpass_colors: vec![(1, hal::image::Layout::ColorAttachmentOptimal)],
-        subpass_inputs: vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],
+        attachments: vec![fill_texture, dest],
+        num_subpasses: 1,
+        inputs_per_subpass: vec![vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],],
+        colors_per_subpass: vec![vec![(1, hal::image::Layout::Present)],],
+        preserves_per_subpass: vec![Vec::<hal::pass::AttachmentId>::new(), Vec::<hal::pass::AttachmentId>::new()],
     }
 }
-
-pub fn create_postprocess_pass_desc() -> pfgpu::render_pass::RenderPassDescription {
-    let dest = hal::pass::Attachment {
-        format: Some(hal::format::Format::Rgba8Srgb),
-        samples: 0,
-        ops: hal::pass::AttachmentOps {
-            load: hal::pass::AttachmentLoadOp::Clear,
-            store: hal::pass::AttachmentStoreOp::Store,
-        },
-        stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
-        layouts: hal::image::Layout::Undefined..hal::image::Layout::ColorAttachmentOptimal,
-    };
-
-    pfgpu::render_pass::RenderPassDescription {
-        attachments: vec![dest],
-        subpass_colors: vec![(0, hal::image::Layout::ColorAttachmentOptimal)],
-        subpass_inputs: vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],
-    }
-}
-
 

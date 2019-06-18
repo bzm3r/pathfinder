@@ -4,11 +4,11 @@
 
 precision highp float;
 
-layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+layout(std140, set = 0, binding = 0) uniform struct UniformStructA {
     vec2 uFramebufferSize;
     vec2 uTileSize;
     vec2 uViewBoxOrigin;
-} uniforms;
+} us_A;
 
 layout(location = 0) in vec2 aTessCoord;
 layout(location = 1) in vec2 aTileOrigin;

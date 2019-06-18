@@ -2,7 +2,7 @@
 
 precision highp float;
 
-layout(set = 0, binding = 0) uniform sampler2D uAreaLUT;
+layout(set = 0, binding = 1) uniform sampler2D uAreaLUT;
 
 layout(location = 0) in vec2 vFrom;
 layout(location = 1) in vec2 vTo;

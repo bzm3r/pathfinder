@@ -4,21 +4,21 @@
 
 precision highp float;
 
-layout(std140, set = 0, binding = 0) uniform struct UniformInputs {
+layout(std140, set = 0, binding = 3) uniform struct UniformStructD {
     vec2 uSourceSize;
     vec4 uFGColor;
     vec4 uBGColor;
     int uGammaCorrectionEnabled;
     vec4 uKernel;
-} uniforms;
+} us_D;
 
-layout(std140, set = 0, binding = 1) sampler2D uSource;
+layout(std140, set = 0, binding = 6) sampler2D uSource;
+
+layout(std140, set = 0, binding = 7) uniform sampler2D uGammaLUT;
 
 layout(location = 0) in vec2 vTexCoord;
 
 layout(location = 0) out vec4 oFragColor;
-
-layout(std140, set = 0, binding = 2) uniform sampler2D uGammaLUT;
 
 float gammaCorrectChannel(float bgColor, float fgColor){
     return texture(uGammaLUT, vec2(fgColor, 1.0 - bgColor)). r;

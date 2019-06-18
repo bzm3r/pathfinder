@@ -40,24 +40,33 @@ pub mod resources;
 #[derive(Clone)]
 pub struct RenderPassDescription {
     attachments: Vec<hal::pass::Attachment>,
-    subpass_colors: Vec<hal::pass::AttachmentRef>,
-    subpass_inputs: Vec<hal::pass::AttachmentRef>,
+    num_subpasses: usize,
+    colors_per_subpass: Vec<Vec<hal::pass::AttachmentRef>>,
+    inputs_per_subpass: Vec<Vec<hal::pass::AttachmentRef>>,
+    preserves_per_subpass: Vec<Vec<hal::pass::AttachmentId>>
+}
+
+impl RenderPassDescription {
+    fn update_attachment_format(&mut self, attachment_index: usize, new_format: hal::format::Format) {
+        Option::replace(&mut self.attachments[attachment_index].format, new_format);
+    }
 }
 
 pub unsafe fn create_render_pass(
     device: &<Backend as hal::Backend>::Device,
     render_pass_desc: RenderPassDescription,
 ) -> <Backend as hal::Backend>::RenderPass {
-    let subpass = hal::pass::SubpassDesc {
-        colors: &render_pass_desc.subpass_colors,
-        inputs: &render_pass_desc.subpass_inputs,
+
+    let subpasses: Vec<hal::pass::SubpassDesc> = (0..render_pass_desc.num_subpasses).into_iter().map(|i| hal::pass::SubpassDesc {
+        colors: &render_pass_desc.colors_per_subpass[i],
+        inputs: &render_pass_desc.inputs_per_subpass[i],
         depth_stencil: None,
         resolves: &[],
-        preserves: &[],
-    };
+        preserves: &render_pass_desc.preserves_per_subpass[i],
+    }).collect();
 
     device
-        .create_render_pass(&render_pass_desc.attachments, &[subpass], &[])
+        .create_render_pass(&render_pass_desc.attachments, subpasses, &[])
         .unwrap()
 }
 
@@ -68,14 +77,12 @@ pub struct SwapchainState {
     swapchain: <Backend as hal::Backend>::Swapchain,
     in_flight_fences: Vec<<Backend as hal::Backend>::Fence>,
     draw_pipeline_layout_state: PipelineLayoutState,
-    postprocess_pipeline_layout_state: PipelineLayoutState,
     tile_solid_multicolor_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     tile_solid_monochrome_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     tile_alpha_multicolor_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     tile_alpha_monochrome_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     stencil_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
-    postprocess_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
-    // submission_command_buffers: Vec<hal::command::CommandBuffer<back::Backend, hal::Graphics, _, hal::command::Primary, back::command::CommandBuffer>>,
+    postprocess_pipeline: Option<<Backend as hal::Backend>::GraphicsPipeline>,
 }
 
 impl SwapchainState {
@@ -85,16 +92,15 @@ impl SwapchainState {
         window: &winit::Window,
         surface: &mut <Backend as hal::Backend>::Surface,
         resource_loader: &dyn crate::resources::ResourceLoader,
-        draw_render_pass_description: RenderPassDescription,
-        postprocess_render_pass_description: RenderPassDescription,
+        mut draw_render_pass_description: RenderPassDescription,
+        indices_of_attachments_without_format: Vec<usize>,
         draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
         tile_solid_multicolor_pipeline_description: PipelineDescription,
         tile_solid_monochrome_pipeline_description: PipelineDescription,
         tile_alpha_multicolor_pipeline_description: PipelineDescription,
         tile_alpha_monochrome_pipeline_description: PipelineDescription,
         stencil_pipeline_description: PipelineDescription,
-        postprocess_pipeline_description: PipelineDescription,
+        postprocess_pipeline_description: Option<PipelineDescription>,
     ) -> SwapchainState {
         let (capabilities, compatible_formats, _compatible_present_modes) =
             surface.compatibility(&mut adapter.physical_device);
@@ -163,33 +169,12 @@ impl SwapchainState {
 
         let max_frames_in_flight = swapchain_images.len();
 
-        let RenderPassDescription {
-            mut attachments,
-            subpass_colors,
-            subpass_inputs,
-        } = draw_render_pass_description;
-        let hal::pass::Attachment {
-            samples,
-            ops,
-            stencil_ops,
-            layouts,
-            ..
-        } = attachments.pop().unwrap();
-        let attachments = vec![hal::pass::Attachment {
-            format: Some(swapchain_image_format),
-            samples,
-            ops,
-            stencil_ops,
-            layouts,
-        }];
-
-        let draw_render_pass_description = RenderPassDescription {
-            attachments,
-            subpass_colors,
-            subpass_inputs,
-        };
+        for ix in indices_of_attachments_without_format.into_iter() {
+            draw_render_pass_description.update_attachment_format(ix, swapchain_image_format);
+        }
 
         let draw_render_pass = create_render_pass(device, draw_render_pass_description);
+
         let draw_pipeline_layout_state = PipelineLayoutState::new(
             device,
             draw_descriptor_set_layout_bindings,
@@ -214,35 +199,34 @@ impl SwapchainState {
                 })
                 .collect();
 
-        //        let submission_command_buffers: Vec<_> = swapchain_framebuffers
-        //            .iter()
-        //            .map(|_| command_pool.acquire_command_buffer())
-        //            .collect();
-
         let tile_solid_multicolor_pipeline = create_pipeline(
             device,
             &draw_pipeline_layout_state,
             resource_loader,
             tile_solid_multicolor_pipeline_description,
         );
+
         let tile_solid_monochrome_pipeline = create_pipeline(
             device,
             &draw_pipeline_layout_state,
             resource_loader,
             tile_solid_monochrome_pipeline_description,
         );
+
         let tile_alpha_multicolor_pipeline = create_pipeline(
             device,
             &draw_pipeline_layout_state,
             resource_loader,
             tile_alpha_multicolor_pipeline_description,
         );
+
         let tile_alpha_monochrome_pipeline = create_pipeline(
             device,
             &draw_pipeline_layout_state,
             resource_loader,
             tile_alpha_monochrome_pipeline_description,
         );
+
         let stencil_pipeline = create_pipeline(
             device,
             &draw_pipeline_layout_state,
@@ -250,19 +234,17 @@ impl SwapchainState {
             stencil_pipeline_description,
         );
 
-        let postprocess_render_pass =
-            create_render_pass(device, postprocess_render_pass_description);
-        let postprocess_pipeline_layout_state = PipelineLayoutState::new(
-            device,
-            postprocess_descriptor_set_layout_bindings,
-            postprocess_render_pass,
-        );
-        let postprocess_pipeline = create_pipeline(
-            device,
-            &draw_pipeline_layout_state,
-            resource_loader,
-            postprocess_pipeline_description,
-        );
+        let postprocess_pipeline = match postprocess_pipeline_description {
+            Some(ppd) => {
+                Some(create_pipeline(
+                    device,
+                    &draw_pipeline_layout_state,
+                    resource_loader,
+                    ppd,
+                ))
+            },
+            _ => { None },
+        };
 
         let in_flight_fences: Vec<<Backend as hal::Backend>::Fence> = (0..max_frames_in_flight)
             .map(|_| device.create_fence(true).unwrap())
@@ -275,14 +257,12 @@ impl SwapchainState {
             swapchain,
             in_flight_fences,
             draw_pipeline_layout_state,
-            postprocess_pipeline_layout_state,
             tile_solid_multicolor_pipeline,
             tile_solid_monochrome_pipeline,
             tile_alpha_multicolor_pipeline,
             tile_alpha_monochrome_pipeline,
             stencil_pipeline,
             postprocess_pipeline,
-            //submission_command_buffers,
         }
     }
 
@@ -317,7 +297,6 @@ impl SwapchainState {
             tile_alpha_multicolor_pipeline,
             tile_alpha_monochrome_pipeline,
             stencil_pipeline,
-            postprocess_pipeline_layout_state,
             postprocess_pipeline,
             //submission_command_buffers
         } = swapchain_state;
@@ -344,21 +323,20 @@ impl SwapchainState {
             tile_alpha_multicolor_pipeline,
             tile_alpha_monochrome_pipeline,
             stencil_pipeline,
-            postprocess_pipeline,
         ]
         .into_iter()
         {
             device.destroy_graphics_pipeline(pl);
         }
 
-        for pl_s in vec![
-            draw_pipeline_layout_state,
-            postprocess_pipeline_layout_state,
-        ]
-        .into_iter()
-        {
-            PipelineLayoutState::destroy_pipeline_layout_state(device, pl_s);
-        }
+        match postprocess_pipeline {
+            Some(pp) => {
+                device.destroy_graphics_pipeline(pp);
+            },
+            _ => {},
+        };
+
+        PipelineLayoutState::destroy_pipeline_layout_state(device, draw_pipeline_layout_state);
 
         device.destroy_swapchain(swapchain);
 
@@ -376,17 +354,17 @@ pub struct GpuState<'a> {
     command_queue: <Backend as hal::Backend>::CommandQueue,
     command_pool: hal::CommandPool<Backend, hal::Graphics>,
     draw_render_pass_description: RenderPassDescription,
-    postprocess_render_pass_description: RenderPassDescription,
+    indices_of_attachments_without_format: Vec<usize>,
     draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-    postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
     tile_solid_multicolor_pipeline_description: PipelineDescription,
     tile_solid_monochrome_pipeline_description: PipelineDescription,
     tile_alpha_multicolor_pipeline_description: PipelineDescription,
     tile_alpha_monochrome_pipeline_description: PipelineDescription,
     stencil_pipeline_description: PipelineDescription,
-    postprocess_pipeline_description: PipelineDescription,
+    postprocess_pipeline_description: Option<PipelineDescription>,
     swapchain_state: Takeable<SwapchainState>,
     quad_vertex_positions_buffer_pool: BufferPool<'a>,
+    quad_vertex_indices_buffer_pool: BufferPool<'a>,
     tile_solid_vertex_buffer_pool: BufferPool<'a>,
     tile_alpha_vertex_buffer_pool: BufferPool<'a>,
     stencil_vertex_buffer_pool: BufferPool<'a>,
@@ -406,19 +384,18 @@ impl<'a> GpuState<'a> {
         instance_name: &str,
         fill_render_pass_description: RenderPassDescription,
         draw_render_pass_description: RenderPassDescription,
-        postprocess_render_pass_description: RenderPassDescription,
         fill_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
         draw_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
-        postprocess_descriptor_set_layout_bindings: Vec<hal::pso::DescriptorSetLayoutBinding>,
         fill_pipeline_description: PipelineDescription,
         tile_solid_monochrome_pipeline_description: PipelineDescription,
         tile_solid_multicolor_pipeline_description: PipelineDescription,
         tile_alpha_monochrome_pipeline_description: PipelineDescription,
         tile_alpha_multicolor_pipeline_description: PipelineDescription,
-        postprocess_pipeline_description: PipelineDescription,
         stencil_pipeline_description: PipelineDescription,
+        postprocess_pipeline_description: Option<PipelineDescription>,
         fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
         max_quad_vertex_positions_buffer_size: u64,
+        max_quad_vertex_indices_buffer_size: u64,
         max_fill_vertex_buffer_size: u64,
         max_tile_vertex_buffer_size: u64,
         monochrome: bool,
@@ -443,6 +420,12 @@ impl<'a> GpuState<'a> {
 
         let current_frame_index: usize = 0;
 
+        let indices_of_attachments_without_format: Vec<usize>= if postprocess_pipeline_description.is_some() {
+            vec![1, 2]
+        } else {
+            vec![1,]
+        };
+
         let swapchain_state = Takeable::new(SwapchainState::new(
             &mut adapter,
             &device,
@@ -450,15 +433,14 @@ impl<'a> GpuState<'a> {
             &mut surface,
             resource_loader,
             draw_render_pass_description.clone(),
-            postprocess_render_pass_description.clone(),
+            indices_of_attachments_without_format.clone(),
             draw_descriptor_set_layout_bindings.clone(),
-            postprocess_descriptor_set_layout_bindings.clone(),
             tile_solid_multicolor_pipeline_description.clone(),
             tile_solid_monochrome_pipeline_description.clone(),
             tile_alpha_multicolor_pipeline_description.clone(),
             tile_alpha_monochrome_pipeline_description.clone(),
             stencil_pipeline_description.clone(),
-            postprocess_pipeline_description.clone(),
+                postprocess_pipeline_description.clone(),
         ));
 
         let quad_vertex_positions_buffer_pool = BufferPool::new(
@@ -469,12 +451,22 @@ impl<'a> GpuState<'a> {
             hal::buffer::Usage::VERTEX,
         );
 
+        let quad_vertex_indices_buffer_pool = BufferPool::new(
+            &mut adapter,
+            &device,
+            max_quad_vertex_indices_buffer_size,
+            1,
+            hal::buffer::Usage::INDEX,
+        );
+
         let fill_render_pass = create_render_pass(&device, fill_render_pass_description);
+
         let fill_pipeline_layout_state = PipelineLayoutState::new(
             &device,
             fill_descriptor_set_layout_bindings,
             fill_render_pass,
         );
+
         let fill_framebuffer = Framebuffer::new(
             &mut adapter,
             &device,
@@ -482,6 +474,7 @@ impl<'a> GpuState<'a> {
             fill_framebuffer_size,
             fill_pipeline_layout_state.render_pass(),
         );
+
         let fill_vertex_buffer_pool = BufferPool::new(
             &mut adapter,
             &device,
@@ -489,6 +482,7 @@ impl<'a> GpuState<'a> {
             swapchain_state.in_flight_fences.len() as u8,
             hal::buffer::Usage::VERTEX,
         );
+
         let fill_pipeline = create_pipeline(
             &device,
             &fill_pipeline_layout_state,
@@ -503,6 +497,7 @@ impl<'a> GpuState<'a> {
             swapchain_state.in_flight_fences.len() as u8,
             hal::buffer::Usage::VERTEX,
         );
+
         let tile_alpha_vertex_buffer_pool = BufferPool::new(
             &mut adapter,
             &device,
@@ -510,6 +505,7 @@ impl<'a> GpuState<'a> {
             swapchain_state.in_flight_fences.len() as u8,
             hal::buffer::Usage::VERTEX,
         );
+
         let stencil_vertex_buffer_pool = BufferPool::new(
             &mut adapter,
             &device,
@@ -528,9 +524,8 @@ impl<'a> GpuState<'a> {
             command_queue,
             command_pool,
             draw_render_pass_description,
-            postprocess_render_pass_description,
+            indices_of_attachments_without_format,
             draw_descriptor_set_layout_bindings,
-            postprocess_descriptor_set_layout_bindings,
             tile_solid_multicolor_pipeline_description,
             tile_solid_monochrome_pipeline_description,
             tile_alpha_multicolor_pipeline_description,
@@ -539,6 +534,7 @@ impl<'a> GpuState<'a> {
             postprocess_pipeline_description,
             swapchain_state,
             quad_vertex_positions_buffer_pool,
+            quad_vertex_indices_buffer_pool,
             tile_solid_vertex_buffer_pool,
             tile_alpha_vertex_buffer_pool,
             stencil_vertex_buffer_pool,
@@ -665,9 +661,8 @@ impl<'a> GpuState<'a> {
             &mut self.surface,
             self.resource_loader,
             self.draw_render_pass_description.clone(),
-            self.postprocess_render_pass_description.clone(),
+            self.indices_of_attachments_without_format.clone(),
             self.draw_descriptor_set_layout_bindings.clone(),
-            self.postprocess_descriptor_set_layout_bindings.clone(),
             self.tile_solid_multicolor_pipeline_description.clone(),
             self.tile_solid_monochrome_pipeline_description.clone(),
             self.tile_alpha_multicolor_pipeline_description.clone(),
@@ -737,17 +732,91 @@ impl<'a> GpuState<'a> {
         );
     }
 
+    pub unsafe fn submit_solid_tile_draws(&mut self) {
+        let mut cmd_buffer = self
+            .command_pool
+            .acquire_command_buffer::<hal::command::OneShot>()
+            .into_raw();
+
+        cmd_buffer.begin(
+            hal::command::CommandBufferFlags::ONE_TIME_SUBMIT,
+            hal::command::CommandBufferInheritanceInfo::default(),
+        );
+        cmd_buffer.begin_render_pass(
+            self.swapchain_state.draw_pipeline_layout_state.render_pass(),
+            self.swapchain_state.draw_framebuffer(),
+            self.swapchain_state.extent,
+            &[],
+            hal::command::SubpassContents::Inline,
+        );
+
+        if self.monochrome {
+            cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_monochrome_pipeline);
+        } else {
+            cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_multicolor_pipeline);
+        }
+
+
+        cmd_buffer.bind_graphics_descriptor_sets(
+            self.swapchain_state.draw_pipeline_layout_state.pipeline_layout(),
+            0,
+            self.swapchain_state.draw_pipeline_layout_state.descriptor_sets(),
+            &[],
+        );
+
+        cmd_buffer.bind_vertex_buffer(0, vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0), 0)]);
+        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
+            buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0),
+            offset: 0,
+            index_type: hal::IndexType::U32,
+        });
+
+        for (vertex_count, instance_count, ix) in
+            self.tile_solid_vertex_buffer_pool.submission_list.iter()
+            {
+                cmd_buffer.bind_vertex_buffers(
+                    0,
+                    vec![(self.tile_solid_vertex_buffer_pool.get_buffer(*ix).buffer(), 0)],
+                );
+                cmd_buffer.draw(vertex_count.clone(), instance_count.clone());
+            }
+
+        if self.postprocessing_needed {
+            cmd_buffer.next_subpass(hal::command::SubpassContents::Inline);
+
+            cmd_buffer.bind_graphics_pipeline(self.swapchain_state.postprocess_pipeline.as_ref().unwrap());
+        }
+
+        cmd_buffer.end_render_pass();
+        cmd_buffer.finish();
+
+        let submission = hal::queue::Submission {
+            command_buffers: vec![&cmd_buffer],
+            wait_semaphores: None,
+            signal_semaphores: None,
+        };
+
+        self.command_queue
+            .submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, None);
+    }
+
+    pub unsafe fn submit_alpha_tile_draws(&mut self) {
+
+    }
+
     pub unsafe fn submit_fill_draws(&mut self) {
         let mut cmd_buffer = self
             .command_pool
             .acquire_command_buffer::<hal::command::OneShot>()
             .into_raw();
+
         cmd_buffer.begin(
             hal::command::CommandBufferFlags::ONE_TIME_SUBMIT,
             hal::command::CommandBufferInheritanceInfo::default(),
         );
 
         cmd_buffer.bind_graphics_pipeline(self.fill_pipeline());
+
         cmd_buffer.bind_graphics_descriptor_sets(
             self.fill_pipeline_layout_state.pipeline_layout(),
             0,
@@ -768,7 +837,13 @@ impl<'a> GpuState<'a> {
             hal::command::SubpassContents::Inline,
         );
 
-        // TODO: quad vertex positions buffer pool
+        cmd_buffer.bind_vertex_buffer(0, vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0), 0)]);
+        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
+           buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0),
+            offset: 0,
+            index_type: hal::IndexType::U32,
+        });
+
         for (vertex_count, instance_count, ix) in
             self.fill_vertex_buffer_pool.submission_list.iter()
         {
@@ -1754,6 +1829,7 @@ pub unsafe fn create_pipeline<'a>(
             baked_states,
             ..
         } = pipeline_description;
+
         let desc = hal::pso::GraphicsPipelineDesc {
             shaders,
             rasterizer,
