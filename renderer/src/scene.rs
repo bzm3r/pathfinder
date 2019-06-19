@@ -14,10 +14,11 @@ use crate::builder::SceneBuilder;
 use crate::concurrent::executor::Executor;
 use crate::options::{PreparedRenderOptions, PreparedRenderTransform};
 use crate::options::{RenderCommandListener, RenderOptions};
+use crate::paint::{Paint, PaintId};
 use hashbrown::HashMap;
-use pathfinder_geometry::basic::point::Point2DF32;
-use pathfinder_geometry::basic::rect::RectF32;
-use pathfinder_geometry::basic::transform2d::Transform2DF32;
+use pathfinder_geometry::basic::vector::Vector2F;
+use pathfinder_geometry::basic::rect::RectF;
+use pathfinder_geometry::basic::transform2d::Transform2DF;
 use pathfinder_geometry::color::ColorU;
 use pathfinder_geometry::outline::Outline;
 use std::io::{self, Write};
@@ -25,10 +26,10 @@ use std::io::{self, Write};
 #[derive(Clone)]
 pub struct Scene {
     pub(crate) paths: Vec<PathObject>,
-    paints: Vec<Paint>,
+    pub(crate) paints: Vec<Paint>,
     paint_cache: HashMap<Paint, PaintId>,
-    bounds: RectF32,
-    view_box: RectF32,
+    bounds: RectF,
+    view_box: RectF,
 }
 
 impl Scene {
@@ -38,8 +39,8 @@ impl Scene {
             paths: vec![],
             paints: vec![],
             paint_cache: HashMap::new(),
-            bounds: RectF32::default(),
-            view_box: RectF32::default(),
+            bounds: RectF::default(),
+            view_box: RectF::default(),
         }
     }
 
@@ -66,32 +67,23 @@ impl Scene {
     }
 
     #[inline]
-    pub fn bounds(&self) -> RectF32 {
+    pub fn bounds(&self) -> RectF {
         self.bounds
     }
 
     #[inline]
-    pub fn set_bounds(&mut self, new_bounds: RectF32) {
+    pub fn set_bounds(&mut self, new_bounds: RectF) {
         self.bounds = new_bounds;
     }
 
     #[inline]
-    pub fn view_box(&self) -> RectF32 {
+    pub fn view_box(&self) -> RectF {
         self.view_box
     }
 
     #[inline]
-    pub fn set_view_box(&mut self, new_view_box: RectF32) {
+    pub fn set_view_box(&mut self, new_view_box: RectF) {
         self.view_box = new_view_box;
-    }
-
-    pub fn build_shaders(&self) -> Vec<ObjectShader> {
-        self.paths
-            .iter()
-            .map(|path_object| {
-                ObjectShader { fill_color: self.paints[path_object.paint.0 as usize].color }
-            })
-            .collect()
     }
 
     pub(crate) fn apply_render_options(
@@ -124,12 +116,12 @@ impl Scene {
                 if options.transform.is_2d() || options.subpixel_aa_enabled {
                     let mut transform = match options.transform {
                         PreparedRenderTransform::Transform2D(transform) => transform,
-                        PreparedRenderTransform::None => Transform2DF32::default(),
+                        PreparedRenderTransform::None => Transform2DF::default(),
                         PreparedRenderTransform::Perspective { .. } => unreachable!(),
                     };
                     if options.subpixel_aa_enabled {
                         transform = transform
-                            .post_mul(&Transform2DF32::from_scale(&Point2DF32::new(3.0, 1.0)))
+                            .post_mul(&Transform2DF::from_scale(Vector2F::new(3.0, 1.0)))
                     }
                     outline.transform(&transform);
                 }
@@ -164,9 +156,9 @@ impl Scene {
     }
 
     #[inline]
-    pub(crate) fn effective_view_box(&self, render_options: &PreparedRenderOptions) -> RectF32 {
+    pub(crate) fn effective_view_box(&self, render_options: &PreparedRenderOptions) -> RectF {
         if render_options.subpixel_aa_enabled {
-            self.view_box.scale_xy(Point2DF32::new(3.0, 1.0))
+            self.view_box.scale_xy(Vector2F::new(3.0, 1.0))
         } else {
             self.view_box
         }
@@ -225,17 +217,9 @@ impl PathObject {
     pub fn outline(&self) -> &Outline {
         &self.outline
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Paint {
-    pub color: ColorU,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct PaintId(pub u16);
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ObjectShader {
-    pub fill_color: ColorU,
+    #[inline]
+    pub(crate) fn paint(&self) -> PaintId {
+        self.paint
+    }
 }

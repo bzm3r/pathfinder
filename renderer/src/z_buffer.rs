@@ -11,10 +11,12 @@
 //! Software occlusion culling.
 
 use crate::gpu_data::SolidTileBatchPrimitive;
+use crate::paint;
+use crate::scene::PathObject;
 use crate::tile_map::DenseTileMap;
 use crate::tiles;
-use pathfinder_geometry::basic::point::Point2DI32;
-use pathfinder_geometry::basic::rect::RectF32;
+use pathfinder_geometry::basic::vector::Vector2I;
+use pathfinder_geometry::basic::rect::RectF;
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -23,20 +25,20 @@ pub struct ZBuffer {
 }
 
 impl ZBuffer {
-    pub fn new(view_box: RectF32) -> ZBuffer {
+    pub fn new(view_box: RectF) -> ZBuffer {
         let tile_rect = tiles::round_rect_out_to_tile_bounds(view_box);
         ZBuffer {
             buffer: DenseTileMap::from_builder(|_| AtomicUsize::new(0), tile_rect),
         }
     }
 
-    pub fn test(&self, coords: Point2DI32, object_index: u32) -> bool {
+    pub fn test(&self, coords: Vector2I, object_index: u32) -> bool {
         let tile_index = self.buffer.coords_to_index_unchecked(coords);
         let existing_depth = self.buffer.data[tile_index as usize].load(AtomicOrdering::SeqCst);
         existing_depth < object_index as usize + 1
     }
 
-    pub fn update(&self, coords: Point2DI32, object_index: u16) {
+    pub fn update(&self, coords: Vector2I, object_index: u16) {
         let tile_index = self.buffer.coords_to_index_unchecked(coords);
         let mut old_depth = self.buffer.data[tile_index].load(AtomicOrdering::SeqCst);
         let new_depth = (object_index + 1) as usize;
@@ -54,7 +56,8 @@ impl ZBuffer {
         }
     }
 
-    pub fn build_solid_tiles(&self, object_range: Range<u32>) -> Vec<SolidTileBatchPrimitive> {
+    pub fn build_solid_tiles(&self, paths: &[PathObject], object_range: Range<u32>)
+                             -> Vec<SolidTileBatchPrimitive> {
         let mut solid_tiles = vec![];
         for tile_index in 0..self.buffer.data.len() {
             let depth = self.buffer.data[tile_index].load(AtomicOrdering::Relaxed);
@@ -67,13 +70,27 @@ impl ZBuffer {
             if object_index < object_range.start || object_index >= object_range.end {
                 continue;
             }
-            solid_tiles.push(SolidTileBatchPrimitive {
-                tile_x: (tile_coords.x() + self.buffer.rect.min_x()) as i16,
-                tile_y: (tile_coords.y() + self.buffer.rect.min_y()) as i16,
-                object_index: object_index as u16,
-            });
+
+            let origin_uv = paint::paint_id_to_tex_coords(paths[object_index as usize].paint());
+
+            solid_tiles.push(SolidTileBatchPrimitive::new(tile_coords + self.buffer.rect.origin(),
+                                                          object_index as u16,
+                                                          origin_uv));
         }
 
         solid_tiles
+    }
+}
+
+impl SolidTileBatchPrimitive {
+    fn new(tile_coords: Vector2I, object_index: u16, origin_uv: Vector2I)
+           -> SolidTileBatchPrimitive {
+        SolidTileBatchPrimitive {
+            tile_x: tile_coords.x() as i16,
+            tile_y: tile_coords.y() as i16,
+            object_index: object_index,
+            origin_u: origin_uv.x() as u16,
+            origin_v: origin_uv.y() as u16,
+        }
     }
 }

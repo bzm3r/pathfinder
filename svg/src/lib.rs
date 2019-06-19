@@ -13,20 +13,21 @@
 #[macro_use]
 extern crate bitflags;
 
-use pathfinder_geometry::basic::line_segment::LineSegmentF32;
-use pathfinder_geometry::basic::point::Point2DF32;
-use pathfinder_geometry::basic::rect::RectF32;
-use pathfinder_geometry::basic::transform2d::{Transform2DF32, Transform2DF32PathIter};
+use pathfinder_geometry::basic::line_segment::LineSegment2F;
+use pathfinder_geometry::basic::vector::Vector2F;
+use pathfinder_geometry::basic::rect::RectF;
+use pathfinder_geometry::basic::transform2d::{Transform2DF, Transform2DFPathIter};
 use pathfinder_geometry::color::ColorU;
 use pathfinder_geometry::outline::Outline;
 use pathfinder_geometry::segment::{Segment, SegmentFlags};
-use pathfinder_geometry::stroke::OutlineStrokeToFill;
-use pathfinder_renderer::scene::{Paint, PathObject, Scene};
+use pathfinder_geometry::stroke::{LineCap, LineJoin, OutlineStrokeToFill, StrokeStyle};
+use pathfinder_renderer::paint::Paint;
+use pathfinder_renderer::scene::{PathObject, Scene};
 use std::fmt::{Display, Formatter, Result as FormatResult};
 use std::mem;
-use usvg::{Color as SvgColor, Node, NodeExt, NodeKind, Paint as UsvgPaint};
-use usvg::{PathSegment as UsvgPathSegment, Rect as UsvgRect, Transform as UsvgTransform};
-use usvg::{Tree, Visibility};
+use usvg::{Color as SvgColor, LineCap as UsvgLineCap, LineJoin as UsvgLineJoin, Node, NodeExt};
+use usvg::{NodeKind, Opacity, Paint as UsvgPaint, PathSegment as UsvgPathSegment};
+use usvg::{Rect as UsvgRect, Transform as UsvgTransform, Tree, Visibility};
 
 const HAIRLINE_STROKE_WIDTH: f32 = 0.0333;
 
@@ -60,7 +61,7 @@ bitflags! {
 impl BuiltSVG {
     // TODO(pcwalton): Allow a global transform to be set.
     pub fn from_tree(tree: Tree) -> BuiltSVG {
-        let global_transform = Transform2DF32::default();
+        let global_transform = Transform2DF::default();
 
         let mut built_svg = BuiltSVG {
             scene: Scene::new(),
@@ -85,7 +86,7 @@ impl BuiltSVG {
         built_svg
     }
 
-    fn process_node(&mut self, node: &Node, transform: &Transform2DF32) {
+    fn process_node(&mut self, node: &Node, transform: &Transform2DF) {
         let node_transform = usvg_transform_to_transform_2d(&node.transform());
         let transform = transform.pre_mul(&node_transform);
 
@@ -114,12 +115,14 @@ impl BuiltSVG {
             }
             NodeKind::Path(ref path) if path.visibility == Visibility::Visible => {
                 if let Some(ref fill) = path.fill {
-                    let style = self
-                        .scene
-                        .push_paint(&Paint::from_svg_paint(&fill.paint, &mut self.result_flags));
+                    let style = self.scene.push_paint(&Paint::from_svg_paint(
+                        &fill.paint,
+                        fill.opacity,
+                        &mut self.result_flags,
+                    ));
 
                     let path = UsvgPathToSegments::new(path.segments.iter().cloned());
-                    let path = Transform2DF32PathIter::new(path, &transform);
+                    let path = Transform2DFPathIter::new(path, &transform);
                     let outline = Outline::from_segments(path);
 
                     let name = format!("Fill({})", node.id());
@@ -129,16 +132,23 @@ impl BuiltSVG {
                 if let Some(ref stroke) = path.stroke {
                     let style = self.scene.push_paint(&Paint::from_svg_paint(
                         &stroke.paint,
+                        stroke.opacity,
                         &mut self.result_flags,
                     ));
-                    let stroke_width = f32::max(stroke.width.value() as f32, HAIRLINE_STROKE_WIDTH);
+
+                    let stroke_style = StrokeStyle {
+                        line_width: f32::max(stroke.width.value() as f32, HAIRLINE_STROKE_WIDTH),
+                        line_cap: LineCap::from_usvg_line_cap(stroke.linecap),
+                        line_join: LineJoin::from_usvg_line_join(stroke.linejoin,
+                                                                 stroke.miterlimit as f32),
+                    };
 
                     let path = UsvgPathToSegments::new(path.segments.iter().cloned());
                     let outline = Outline::from_segments(path);
 
-                    let mut stroke_to_fill = OutlineStrokeToFill::new(outline, stroke_width);
+                    let mut stroke_to_fill = OutlineStrokeToFill::new(&outline, stroke_style);
                     stroke_to_fill.offset();
-                    let mut outline = stroke_to_fill.outline;
+                    let mut outline = stroke_to_fill.into_outline();
                     outline.transform(&transform);
 
                     let name = format!("Stroke({})", node.id());
@@ -235,15 +245,17 @@ impl Display for BuildResultFlags {
 }
 
 trait PaintExt {
-    fn from_svg_paint(svg_paint: &UsvgPaint, result_flags: &mut BuildResultFlags) -> Self;
+    fn from_svg_paint(svg_paint: &UsvgPaint, opacity: Opacity, result_flags: &mut BuildResultFlags)
+                      -> Self;
 }
 
 impl PaintExt for Paint {
     #[inline]
-    fn from_svg_paint(svg_paint: &UsvgPaint, result_flags: &mut BuildResultFlags) -> Paint {
+    fn from_svg_paint(svg_paint: &UsvgPaint, opacity: Opacity, result_flags: &mut BuildResultFlags)
+                      -> Paint {
         Paint {
             color: match *svg_paint {
-                UsvgPaint::Color(color) => ColorU::from_svg_color(color),
+                UsvgPaint::Color(color) => ColorU::from_svg_color(color, opacity),
                 UsvgPaint::Link(_) => {
                     // TODO(pcwalton)
                     result_flags.insert(BuildResultFlags::UNSUPPORTED_LINK_PAINT);
@@ -254,15 +266,15 @@ impl PaintExt for Paint {
     }
 }
 
-fn usvg_rect_to_euclid_rect(rect: &UsvgRect) -> RectF32 {
-    RectF32::new(
-        Point2DF32::new(rect.x as f32, rect.y as f32),
-        Point2DF32::new(rect.width as f32, rect.height as f32),
+fn usvg_rect_to_euclid_rect(rect: &UsvgRect) -> RectF {
+    RectF::new(
+        Vector2F::new(rect.x as f32, rect.y as f32),
+        Vector2F::new(rect.width as f32, rect.height as f32),
     )
 }
 
-fn usvg_transform_to_transform_2d(transform: &UsvgTransform) -> Transform2DF32 {
-    Transform2DF32::row_major(
+fn usvg_transform_to_transform_2d(transform: &UsvgTransform) -> Transform2DF {
+    Transform2DF::row_major(
         transform.a as f32,
         transform.b as f32,
         transform.c as f32,
@@ -277,8 +289,8 @@ where
     I: Iterator<Item = UsvgPathSegment>,
 {
     iter: I,
-    first_subpath_point: Point2DF32,
-    last_subpath_point: Point2DF32,
+    first_subpath_point: Vector2F,
+    last_subpath_point: Vector2F,
     just_moved: bool,
 }
 
@@ -289,8 +301,8 @@ where
     fn new(iter: I) -> UsvgPathToSegments<I> {
         UsvgPathToSegments {
             iter,
-            first_subpath_point: Point2DF32::default(),
-            last_subpath_point: Point2DF32::default(),
+            first_subpath_point: Vector2F::default(),
+            last_subpath_point: Vector2F::default(),
             just_moved: false,
         }
     }
@@ -305,16 +317,15 @@ where
     fn next(&mut self) -> Option<Segment> {
         match self.iter.next()? {
             UsvgPathSegment::MoveTo { x, y } => {
-                let to = Point2DF32::new(x as f32, y as f32);
+                let to = Vector2F::new(x as f32, y as f32);
                 self.first_subpath_point = to;
                 self.last_subpath_point = to;
                 self.just_moved = true;
                 self.next()
             }
             UsvgPathSegment::LineTo { x, y } => {
-                let to = Point2DF32::new(x as f32, y as f32);
-                let mut segment =
-                    Segment::line(&LineSegmentF32::new(&self.last_subpath_point, &to));
+                let to = Vector2F::new(x as f32, y as f32);
+                let mut segment = Segment::line(&LineSegment2F::new(self.last_subpath_point, to));
                 if self.just_moved {
                     segment.flags.insert(SegmentFlags::FIRST_IN_SUBPATH);
                 }
@@ -330,12 +341,12 @@ where
                 x,
                 y,
             } => {
-                let ctrl0 = Point2DF32::new(x1 as f32, y1 as f32);
-                let ctrl1 = Point2DF32::new(x2 as f32, y2 as f32);
-                let to = Point2DF32::new(x as f32, y as f32);
+                let ctrl0 = Vector2F::new(x1 as f32, y1 as f32);
+                let ctrl1 = Vector2F::new(x2 as f32, y2 as f32);
+                let to = Vector2F::new(x as f32, y as f32);
                 let mut segment = Segment::cubic(
-                    &LineSegmentF32::new(&self.last_subpath_point, &to),
-                    &LineSegmentF32::new(&ctrl0, &ctrl1),
+                    &LineSegment2F::new(self.last_subpath_point, to),
+                    &LineSegment2F::new(ctrl0, ctrl1),
                 );
                 if self.just_moved {
                     segment.flags.insert(SegmentFlags::FIRST_IN_SUBPATH);
@@ -345,9 +356,9 @@ where
                 Some(segment)
             }
             UsvgPathSegment::ClosePath => {
-                let mut segment = Segment::line(&LineSegmentF32::new(
-                    &self.last_subpath_point,
-                    &self.first_subpath_point,
+                let mut segment = Segment::line(&LineSegment2F::new(
+                    self.last_subpath_point,
+                    self.first_subpath_point,
                 ));
                 segment.flags.insert(SegmentFlags::CLOSES_SUBPATH);
                 self.just_moved = false;
@@ -359,17 +370,47 @@ where
 }
 
 trait ColorUExt {
-    fn from_svg_color(svg_color: SvgColor) -> Self;
+    fn from_svg_color(svg_color: SvgColor, opacity: Opacity) -> Self;
 }
 
 impl ColorUExt for ColorU {
     #[inline]
-    fn from_svg_color(svg_color: SvgColor) -> ColorU {
+    fn from_svg_color(svg_color: SvgColor, opacity: Opacity) -> ColorU {
         ColorU {
             r: svg_color.red,
             g: svg_color.green,
             b: svg_color.blue,
-            a: 255,
+            a: (opacity.value() * 255.0).round() as u8,
+        }
+    }
+}
+
+trait LineCapExt {
+    fn from_usvg_line_cap(usvg_line_cap: UsvgLineCap) -> Self;
+}
+
+impl LineCapExt for LineCap {
+    #[inline]
+    fn from_usvg_line_cap(usvg_line_cap: UsvgLineCap) -> LineCap {
+        match usvg_line_cap {
+            UsvgLineCap::Butt => LineCap::Butt,
+            UsvgLineCap::Round => LineCap::Round,
+            UsvgLineCap::Square => LineCap::Square,
+        }
+    }
+}
+
+trait LineJoinExt {
+    fn from_usvg_line_join(usvg_line_join: UsvgLineJoin, miter_limit: f32) -> Self;
+}
+
+impl LineJoinExt for LineJoin {
+    #[inline]
+    fn from_usvg_line_join(usvg_line_join: UsvgLineJoin, miter_limit: f32) -> LineJoin {
+        match usvg_line_join {
+            UsvgLineJoin::Miter => LineJoin::Miter(miter_limit),
+            UsvgLineJoin::Round => LineJoin::Round,
+            UsvgLineJoin::Bevel => LineJoin::Bevel,
         }
     }
 }

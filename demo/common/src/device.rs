@@ -11,11 +11,11 @@
 //! GPU rendering code specifically for the demo.
 
 use pathfinder_gpu::resources::ResourceLoader;
-use pathfinder_gpu::{BufferTarget, PfDevice, VertexAttrType};
+use pathfinder_gpu::{BufferTarget, Device, VertexAttrClass, VertexAttrDescriptor, VertexAttrType};
 
 pub struct GroundProgram<D>
 where
-    D: PfDevice,
+    D: Device,
 {
     pub program: D::Program,
     pub transform_uniform: D::Uniform,
@@ -26,7 +26,7 @@ where
 
 impl<D> GroundProgram<D>
 where
-    D: PfDevice,
+    D: Device,
 {
     pub fn new(device: &D, resources: &dyn ResourceLoader) -> GroundProgram<D> {
         let program = device.create_program(resources, "demo_ground");
@@ -46,28 +46,37 @@ where
 
 pub struct GroundVertexArray<D>
 where
-    D: PfDevice,
+    D: Device,
 {
     pub vertex_array: D::VertexArray,
 }
 
 impl<D> GroundVertexArray<D>
 where
-    D: PfDevice,
+    D: Device,
 {
     pub fn new(
         device: &D,
         ground_program: &GroundProgram<D>,
         quad_vertex_positions_buffer: &D::Buffer,
+        quad_vertex_indices_buffer: &D::Buffer,
     ) -> GroundVertexArray<D> {
         let vertex_array = device.create_vertex_array();
 
-        let position_attr = device.get_vertex_attr(&ground_program.program, "Position");
+        let position_attr = device.get_vertex_attr(&ground_program.program, "Position").unwrap();
 
         device.bind_vertex_array(&vertex_array);
         device.use_program(&ground_program.program);
         device.bind_buffer(quad_vertex_positions_buffer, BufferTarget::Vertex);
-        device.configure_float_vertex_attr(&position_attr, 2, VertexAttrType::U8, false, 0, 0, 0);
+        device.configure_vertex_attr(&position_attr, &VertexAttrDescriptor {
+            size: 2,
+            class: VertexAttrClass::Float,
+            attr_type: VertexAttrType::U8,
+            stride: 0,
+            offset: 0,
+            divisor: 0,
+        });
+        device.bind_buffer(quad_vertex_indices_buffer, BufferTarget::Index);
 
         GroundVertexArray { vertex_array }
     }

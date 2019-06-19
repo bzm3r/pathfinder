@@ -14,15 +14,15 @@
 extern crate log;
 
 use gl::types::{GLboolean, GLchar, GLenum, GLfloat, GLint, GLsizei, GLsizeiptr, GLuint, GLvoid};
-use pathfinder_geometry::basic::point::Point2DI32;
-use pathfinder_geometry::basic::rect::RectI32;
+use pathfinder_geometry::basic::vector::Vector2I;
+use pathfinder_geometry::basic::rect::RectI;
+use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_gpu::{BlendState, BufferData, BufferTarget, BufferUploadMode, ClearParams};
-use pathfinder_gpu::{DepthFunc, PfDevice, Primitive, RenderState, ShaderKind, StencilFunc};
-use pathfinder_gpu::{TextureFormat, UniformData, VertexAttrType};
+use pathfinder_gpu::{DepthFunc, Device, Primitive, RenderState, ShaderKind, StencilFunc};
+use pathfinder_gpu::{TextureFormat, UniformData, VertexAttrClass};
+use pathfinder_gpu::{VertexAttrDescriptor, VertexAttrType};
 use pathfinder_simd::default::F32x4;
-use rustache::{HashBuilder, Render};
 use std::ffi::CString;
-use std::io::Cursor;
 use std::mem;
 use std::ptr;
 use std::str;
@@ -40,6 +40,10 @@ impl GLDevice {
             version,
             default_framebuffer,
         }
+    }
+
+    pub fn set_default_framebuffer(&mut self, framebuffer: GLuint) {
+        self.default_framebuffer = framebuffer;
     }
 
     fn set_texture_parameters(&self, texture: &GLTexture) {
@@ -149,7 +153,7 @@ impl GLDevice {
     }
 }
 
-impl PfDevice for GLDevice {
+impl Device for GLDevice {
     type Buffer = GLBuffer;
     type Framebuffer = GLFramebuffer;
     type Program = GLProgram;
@@ -160,7 +164,7 @@ impl PfDevice for GLDevice {
     type VertexArray = GLVertexArray;
     type VertexAttr = GLVertexAttr;
 
-    fn create_texture(&self, format: TextureFormat, size: Point2DI32) -> GLTexture {
+    fn create_texture(&self, format: TextureFormat, size: Vector2I) -> GLTexture {
         let (gl_internal_format, gl_format, gl_type);
         match format {
             TextureFormat::R8 => {
@@ -199,7 +203,7 @@ impl PfDevice for GLDevice {
         texture
     }
 
-    fn create_texture_from_data(&self, size: Point2DI32, data: &[u8]) -> GLTexture {
+    fn create_texture_from_data(&self, size: Vector2I, data: &[u8]) -> GLTexture {
         assert!(data.len() >= size.x() as usize * size.y() as usize);
 
         let mut texture = GLTexture { gl_texture: 0, size };
@@ -221,19 +225,13 @@ impl PfDevice for GLDevice {
         texture
     }
 
-    fn create_shader_from_source(&self,
-                                 name: &str,
-                                 source: &[u8],
-                                 kind: ShaderKind,
-                                 mut template_input: HashBuilder)
-                                 -> GLShader {
+    fn create_shader_from_source(&self, name: &str, source: &[u8], kind: ShaderKind) -> GLShader {
         // FIXME(pcwalton): Do this once and cache it.
         let glsl_version_spec = self.version.to_glsl_version_spec();
-        template_input = template_input.insert("version", glsl_version_spec);
 
-        let mut output = Cursor::new(vec![]);
-        template_input.render(str::from_utf8(source).unwrap(), &mut output).unwrap();
-        let source = output.into_inner();
+        let mut output = vec![];
+        self.preprocess(&mut output, source, glsl_version_spec);
+        let source = output;
 
         let gl_shader_kind = match kind {
             ShaderKind::Vertex => gl::VERTEX_SHADER,
@@ -267,6 +265,7 @@ impl PfDevice for GLDevice {
     }
 
     fn create_program_from_shaders(&self,
+                                   _resources: &dyn ResourceLoader,
                                    name: &str,
                                    vertex_shader: GLShader,
                                    fragment_shader: GLShader)
@@ -305,12 +304,16 @@ impl PfDevice for GLDevice {
         }
     }
 
-    fn get_vertex_attr(&self, program: &Self::Program, name: &str) -> GLVertexAttr {
+    fn get_vertex_attr(&self, program: &Self::Program, name: &str) -> Option<GLVertexAttr> {
         let name = CString::new(format!("a{}", name)).unwrap();
         let attr = unsafe {
-            gl::GetAttribLocation(program.gl_program, name.as_ptr() as *const GLchar) as GLuint
+            gl::GetAttribLocation(program.gl_program, name.as_ptr() as *const GLchar)
         }; ck();
-        GLVertexAttr { attr }
+        if attr < 0 {
+            None
+        } else {
+            Some(GLVertexAttr { attr: attr as GLuint })
+        }
     }
 
     fn get_uniform(&self, program: &GLProgram, name: &str) -> GLUniform {
@@ -327,40 +330,33 @@ impl PfDevice for GLDevice {
         }
     }
 
-    fn configure_float_vertex_attr(&self,
-                                   attr: &GLVertexAttr,
-                                   size: usize,
-                                   attr_type: VertexAttrType,
-                                   normalized: bool,
-                                   stride: usize,
-                                   offset: usize,
-                                   divisor: u32) {
+    fn configure_vertex_attr(&self, attr: &GLVertexAttr, descriptor: &VertexAttrDescriptor) {
         unsafe {
-            gl::VertexAttribPointer(attr.attr,
-                                    size as GLint,
-                                    attr_type.to_gl_type(),
-                                    if normalized { gl::TRUE } else { gl::FALSE },
-                                    stride as GLint,
-                                    offset as *const GLvoid); ck();
-            gl::VertexAttribDivisor(attr.attr, divisor); ck();
-            gl::EnableVertexAttribArray(attr.attr); ck();
-        }
-    }
+            let attr_type = descriptor.attr_type.to_gl_type();
+            match descriptor.class {
+                VertexAttrClass::Float | VertexAttrClass::FloatNorm => {
+                    let normalized = if descriptor.class == VertexAttrClass::FloatNorm {
+                        gl::TRUE
+                    } else {
+                        gl::FALSE
+                    };
+                    gl::VertexAttribPointer(attr.attr,
+                                            descriptor.size as GLint,
+                                            attr_type,
+                                            normalized,
+                                            descriptor.stride as GLint,
+                                            descriptor.offset as *const GLvoid); ck();
+                }
+                VertexAttrClass::Int => {
+                    gl::VertexAttribIPointer(attr.attr,
+                                             descriptor.size as GLint,
+                                             attr_type,
+                                             descriptor.stride as GLint,
+                                             descriptor.offset as *const GLvoid); ck();
+                }
+            }
 
-    fn configure_int_vertex_attr(&self,
-                                 attr: &GLVertexAttr,
-                                 size: usize,
-                                 attr_type: VertexAttrType,
-                                 stride: usize,
-                                 offset: usize,
-                                 divisor: u32) {
-        unsafe {
-            gl::VertexAttribIPointer(attr.attr,
-                                    size as GLint,
-                                    attr_type.to_gl_type(),
-                                    stride as GLint,
-                                    offset as *const GLvoid); ck();
-            gl::VertexAttribDivisor(attr.attr, divisor); ck();
+            gl::VertexAttribDivisor(attr.attr, descriptor.divisor); ck();
             gl::EnableVertexAttribArray(attr.attr); ck();
         }
     }
@@ -452,11 +448,11 @@ impl PfDevice for GLDevice {
     }
 
     #[inline]
-    fn texture_size(&self, texture: &Self::Texture) -> Point2DI32 {
+    fn texture_size(&self, texture: &Self::Texture) -> Vector2I {
         texture.size
     }
 
-    fn upload_to_texture(&self, texture: &Self::Texture, size: Point2DI32, data: &[u8]) {
+    fn upload_to_texture(&self, texture: &Self::Texture, size: Vector2I, data: &[u8]) {
         assert!(data.len() >= size.x() as usize * size.y() as usize * 4);
         unsafe {
             self.bind_texture(texture, 0);
@@ -474,7 +470,7 @@ impl PfDevice for GLDevice {
         self.set_texture_parameters(texture);
     }
 
-    fn read_pixels_from_default_framebuffer(&self, size: Point2DI32) -> Vec<u8> {
+    fn read_pixels_from_default_framebuffer(&self, size: Vector2I) -> Vec<u8> {
         let mut pixels = vec![0; size.x() as usize * size.y() as usize * 4];
         unsafe {
             gl::BindFramebuffer(gl::FRAMEBUFFER, self.default_framebuffer); ck();
@@ -552,17 +548,18 @@ impl PfDevice for GLDevice {
         self.reset_render_state(render_state);
     }
 
-    fn draw_arrays_instanced(&self,
-                             primitive: Primitive,
-                             index_count: u32,
-                             instance_count: u32,
-                             render_state: &RenderState) {
+    fn draw_elements_instanced(&self,
+                               primitive: Primitive,
+                               index_count: u32,
+                               instance_count: u32,
+                               render_state: &RenderState) {
         self.set_render_state(render_state);
         unsafe {
-            gl::DrawArraysInstanced(primitive.to_gl_primitive(),
-                                    0,
-                                    index_count as GLsizei,
-                                    instance_count as GLsizei); ck();
+            gl::DrawElementsInstanced(primitive.to_gl_primitive(),
+                                      index_count as GLsizei,
+                                      gl::UNSIGNED_INT,
+                                      ptr::null(),
+                                      instance_count as GLsizei); ck();
         }
         self.reset_render_state(render_state);
     }
@@ -623,7 +620,7 @@ impl PfDevice for GLDevice {
     }
 
     #[inline]
-    fn bind_default_framebuffer(&self, viewport: RectI32) {
+    fn bind_default_framebuffer(&self, viewport: RectI) {
         unsafe {
             gl::BindFramebuffer(gl::FRAMEBUFFER, self.default_framebuffer); ck();
             gl::Viewport(viewport.origin().x(),
@@ -646,6 +643,30 @@ impl PfDevice for GLDevice {
         unsafe {
             gl::ActiveTexture(gl::TEXTURE0 + unit); ck();
             gl::BindTexture(gl::TEXTURE_2D, texture.gl_texture); ck();
+        }
+    }
+}
+
+impl GLDevice {
+    fn preprocess(&self, output: &mut Vec<u8>, source: &[u8], version: &str) {
+        let mut index = 0;
+        while index < source.len() {
+            if source[index..].starts_with(b"{{") {
+                let end_index = source[index..].iter()
+                                               .position(|character| *character == b'}')
+                                               .expect("Expected `}`!") + index;
+                assert_eq!(source[end_index + 1], b'}');
+                let ident = String::from_utf8_lossy(&source[(index + 2)..end_index]);
+                if ident == "version" {
+                    output.extend_from_slice(version.as_bytes());
+                } else {
+                    panic!("unknown template variable: `{}`", ident);
+                }
+                index = end_index + 2;
+            } else {
+                output.push(source[index]);
+                index += 1;
+            }
         }
     }
 }
@@ -765,7 +786,7 @@ impl Drop for GLShader {
 
 pub struct GLTexture {
     gl_texture: GLuint,
-    pub size: Point2DI32,
+    pub size: Vector2I,
 }
 
 pub struct GLTimerQuery {
@@ -828,7 +849,6 @@ impl PrimitiveExt for Primitive {
     fn to_gl_primitive(self) -> GLuint {
         match self {
             Primitive::Triangles => gl::TRIANGLES,
-            Primitive::TriangleFan => gl::TRIANGLE_FAN,
             Primitive::Lines => gl::LINES,
         }
     }
@@ -865,11 +885,13 @@ impl VertexAttrTypeExt for VertexAttrType {
 }
 
 /// The version/dialect of OpenGL we should render with.
+#[derive(Clone, Copy)]
+#[repr(u32)]
 pub enum GLVersion {
     /// OpenGL 3.0+, core profile.
-    GL3,
+    GL3 = 0,
     /// OpenGL ES 3.0+.
-    GLES3,
+    GLES3 = 1,
 }
 
 impl GLVersion {
@@ -883,15 +905,28 @@ impl GLVersion {
 
 // Error checking
 
-#[cfg(debug)]
+#[cfg(debug_assertions)]
 fn ck() {
     unsafe {
+        // Note that ideally we should be calling gl::GetError() in a loop until it
+        // returns gl::NO_ERROR, but for now we'll just report the first one we find.
         let err = gl::GetError();
-        if err != 0 {
-            panic!("GL error: 0x{:x}", err);
+        if err != gl::NO_ERROR {
+            panic!("GL error: 0x{:x} ({})", err, match err {
+                gl::INVALID_ENUM => "INVALID_ENUM",
+                gl::INVALID_VALUE => "INVALID_VALUE",
+                gl::INVALID_OPERATION => "INVALID_OPERATION",
+                gl::INVALID_FRAMEBUFFER_OPERATION => "INVALID_FRAMEBUFFER_OPERATION",
+                gl::OUT_OF_MEMORY => "OUT_OF_MEMORY",
+                gl::STACK_UNDERFLOW => "STACK_UNDERFLOW",
+                gl::STACK_OVERFLOW => "STACK_OVERFLOW",
+                _ => "Unknown"
+            });
         }
     }
 }
 
-#[cfg(not(debug))]
+#[cfg(not(debug_assertions))]
 fn ck() {}
+
+// Shader preprocessing

@@ -1,4 +1,4 @@
-// pathfinder/demo/common/src/renderer-old.rs
+// pathfinder/demo/common/src/renderer.rs
 //
 // Copyright © 2019 The Pathfinder Project Developers.
 //
@@ -15,9 +15,9 @@ use crate::window::{View, Window};
 use crate::{BackgroundColor, DemoApp, UIVisibility};
 use image::ColorType;
 use pathfinder_geometry::color::{ColorF, ColorU};
-use pathfinder_gpu::{ClearParams, DepthFunc, DepthState, PfDevice, Primitive, RenderState};
+use pathfinder_gpu::{ClearParams, DepthFunc, DepthState, Device, Primitive, RenderState};
 use pathfinder_gpu::{TextureFormat, UniformData};
-use pathfinder_geometry::basic::transform3d::Transform3DF32;
+use pathfinder_geometry::basic::transform3d::Transform3DF;
 use pathfinder_renderer::gpu::renderer::{DestFramebuffer, RenderMode};
 use pathfinder_renderer::gpu_data::RenderCommand;
 use pathfinder_renderer::options::RenderTransform;
@@ -149,6 +149,8 @@ impl<W> DemoApp<W> where W: Window {
         debug!("modelview transform={:?}", modelview_transform);
 
         let viewport = self.window.viewport(View::Stereo(render_scene_index));
+        self.window.make_current(View::Stereo(render_scene_index));
+
         self.renderer
             .replace_dest_framebuffer(DestFramebuffer::Default {
                 viewport,
@@ -168,7 +170,7 @@ impl<W> DemoApp<W> where W: Window {
         let scene_framebuffer = self.scene_framebuffer.as_ref().unwrap();
         let scene_texture = self.renderer.device.framebuffer_texture(scene_framebuffer);
 
-        let quad_scale_transform = Transform3DF32::from_scale(
+        let quad_scale_transform = Transform3DF::from_scale(
             self.scene_metadata.view_box.size().x(),
             self.scene_metadata.view_box.size().y(),
             1.0,
@@ -220,7 +222,7 @@ impl<W> DemoApp<W> where W: Window {
         let ground_scale = self.scene_metadata.view_box.max_x() * 2.0;
 
         let mut base_transform = perspective.transform;
-        base_transform = base_transform.post_mul(&Transform3DF32::from_translation(
+        base_transform = base_transform.post_mul(&Transform3DF::from_translation(
             -0.5 * self.scene_metadata.view_box.max_x(),
             self.scene_metadata.view_box.max_y(),
             -0.5 * ground_scale,
@@ -229,7 +231,7 @@ impl<W> DemoApp<W> where W: Window {
         // Fill ground.
         let mut transform = base_transform;
         transform =
-            transform.post_mul(&Transform3DF32::from_scale(ground_scale, 1.0, ground_scale));
+            transform.post_mul(&Transform3DF::from_scale(ground_scale, 1.0, ground_scale));
 
         let device = &self.renderer.device;
         device.bind_vertex_array(&self.ground_vertex_array.vertex_array);
@@ -248,9 +250,9 @@ impl<W> DemoApp<W> where W: Window {
         );
         device.set_uniform(&self.ground_program.gridline_count_uniform,
                            UniformData::Int(GRIDLINE_COUNT));
-        device.draw_arrays(
-            Primitive::TriangleFan,
-            4,
+        device.draw_elements(
+            Primitive::Triangles,
+            6,
             &RenderState {
                 depth: Some(DepthState { func: DepthFunc::Less, write: true }),
                 ..RenderState::default()

@@ -10,17 +10,19 @@
 
 //! Line or curve segments, optimized with SIMD.
 
-use crate::basic::line_segment::LineSegmentF32;
-use crate::basic::point::Point2DF32;
+use crate::basic::line_segment::LineSegment2F;
+use crate::basic::vector::Vector2F;
+use crate::basic::transform2d::Transform2DF;
 use crate::util::{self, EPSILON};
 use pathfinder_simd::default::F32x4;
+use std::f32::consts::SQRT_2;
 
 const MAX_NEWTON_ITERATIONS: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Segment {
-    pub baseline: LineSegmentF32,
-    pub ctrl: LineSegmentF32,
+    pub baseline: LineSegment2F,
+    pub ctrl: LineSegment2F,
     pub kind: SegmentKind,
     pub flags: SegmentFlags,
 }
@@ -29,35 +31,35 @@ impl Segment {
     #[inline]
     pub fn none() -> Segment {
         Segment {
-            baseline: LineSegmentF32::default(),
-            ctrl: LineSegmentF32::default(),
+            baseline: LineSegment2F::default(),
+            ctrl: LineSegment2F::default(),
             kind: SegmentKind::None,
             flags: SegmentFlags::empty(),
         }
     }
 
     #[inline]
-    pub fn line(line: &LineSegmentF32) -> Segment {
+    pub fn line(line: &LineSegment2F) -> Segment {
         Segment {
             baseline: *line,
-            ctrl: LineSegmentF32::default(),
+            ctrl: LineSegment2F::default(),
             kind: SegmentKind::Line,
             flags: SegmentFlags::empty(),
         }
     }
 
     #[inline]
-    pub fn quadratic(baseline: &LineSegmentF32, ctrl: &Point2DF32) -> Segment {
+    pub fn quadratic(baseline: &LineSegment2F, ctrl: Vector2F) -> Segment {
         Segment {
             baseline: *baseline,
-            ctrl: LineSegmentF32::new(ctrl, &Point2DF32::default()),
+            ctrl: LineSegment2F::new(ctrl, Vector2F::default()),
             kind: SegmentKind::Quadratic,
             flags: SegmentFlags::empty(),
         }
     }
 
     #[inline]
-    pub fn cubic(baseline: &LineSegmentF32, ctrl: &LineSegmentF32) -> Segment {
+    pub fn cubic(baseline: &LineSegment2F, ctrl: &LineSegment2F) -> Segment {
         Segment {
             baseline: *baseline,
             ctrl: *ctrl,
@@ -66,8 +68,43 @@ impl Segment {
         }
     }
 
+    /// Approximates an unit-length arc with a cubic Bézier curve.
+    /// 
+    /// The maximum supported sweep angle is π/2 (i.e. 90°).
+    pub fn arc(sweep_angle: f32) -> Segment {
+        Segment::arc_from_cos(f32::cos(sweep_angle))
+    }
+
+    /// Approximates an unit-length arc with a cubic Bézier curve, given the cosine of the sweep
+    /// angle.
+    ///
+    /// The maximum supported sweep angle is π/2 (i.e. 90°).
+    pub fn arc_from_cos(cos_sweep_angle: f32) -> Segment {
+        // Richard A. DeVeneza, "How to determine the control points of a Bézier curve that
+        // approximates a small arc", 2004.
+        //
+        // https://www.tinaja.com/glib/bezcirc2.pdf
+        let term = F32x4::new(cos_sweep_angle, -cos_sweep_angle,
+                              cos_sweep_angle, -cos_sweep_angle);
+        let signs = F32x4::new(1.0, -1.0, 1.0, 1.0);
+        let p3p0 = ((F32x4::splat(1.0) + term) * F32x4::splat(0.5)).sqrt() * signs;
+        let (p0x, p0y) = (p3p0.z(), p3p0.w());
+        let (p1x, p1y) = (4.0 - p0x, (1.0 - p0x) * (3.0 - p0x) / p0y);
+        let p2p1 = F32x4::new(p1x, -p1y, p1x, p1y) * F32x4::splat(1.0 / 3.0);
+        return Segment::cubic(&LineSegment2F(p3p0), &LineSegment2F(p2p1));
+    }
+
     #[inline]
-    pub fn as_line_segment(&self) -> LineSegmentF32 {
+    pub fn quarter_circle_arc() -> Segment {
+        let p0 = Vector2F::splat(SQRT_2 * 0.5);
+        let p1 = Vector2F::new(-SQRT_2 / 6.0 + 4.0 / 3.0, 7.0 * SQRT_2 / 6.0 - 4.0 / 3.0);
+        let flip = Vector2F::new(1.0, -1.0);
+        let (p2, p3) = (p1.scale_xy(flip), p0.scale_xy(flip));
+        Segment::cubic(&LineSegment2F::new(p3, p0), &LineSegment2F::new(p2, p1))
+    }
+
+    #[inline]
+    pub fn as_line_segment(&self) -> LineSegment2F {
         debug_assert!(self.is_line());
         self.baseline
     }
@@ -109,7 +146,7 @@ impl Segment {
         let mut new_segment = *self;
         let p1_2 = self.ctrl.from() + self.ctrl.from();
         new_segment.ctrl =
-            LineSegmentF32::new(&(self.baseline.from() + p1_2), &(p1_2 + self.baseline.to()))
+            LineSegment2F::new(self.baseline.from() + p1_2, p1_2 + self.baseline.to())
                 .scale(1.0 / 3.0);
         new_segment.kind = SegmentKind::Cubic;
         new_segment
@@ -168,13 +205,33 @@ impl Segment {
     }
 
     #[inline]
-    pub fn sample(self, t: f32) -> Point2DF32 {
+    pub fn sample(self, t: f32) -> Vector2F {
         // FIXME(pcwalton): Don't degree elevate!
         if self.is_line() {
             self.as_line_segment().sample(t)
         } else {
             self.to_cubic().as_cubic_segment().sample(t)
         }
+    }
+
+    #[inline]
+    pub fn transform(self, transform: &Transform2DF) -> Segment {
+        Segment {
+            baseline: transform.transform_line_segment(&self.baseline),
+            ctrl: transform.transform_line_segment(&self.ctrl),
+            kind: self.kind,
+            flags: self.flags,
+        }
+    }
+
+    pub fn arc_length(&self) -> f32 {
+        // FIXME(pcwalton)
+        self.baseline.vector().length()
+    }
+
+    pub fn time_for_distance(&self, distance: f32) -> f32 {
+        // FIXME(pcwalton)
+        distance / self.arc_length()
     }
 }
 
@@ -215,16 +272,16 @@ impl<'s> CubicSegment<'s> {
         let (baseline0, ctrl0, baseline1, ctrl1);
         if t <= 0.0 {
             let from = &self.0.baseline.from();
-            baseline0 = LineSegmentF32::new(from, from);
-            ctrl0 = LineSegmentF32::new(from, from);
+            baseline0 = LineSegment2F::new(*from, *from);
+            ctrl0 = LineSegment2F::new(*from, *from);
             baseline1 = self.0.baseline;
             ctrl1 = self.0.ctrl;
         } else if t >= 1.0 {
             let to = &self.0.baseline.to();
             baseline0 = self.0.baseline;
             ctrl0 = self.0.ctrl;
-            baseline1 = LineSegmentF32::new(to, to);
-            ctrl1 = LineSegmentF32::new(to, to);
+            baseline1 = LineSegment2F::new(*to, *to);
+            ctrl1 = LineSegment2F::new(*to, *to);
         } else {
             let tttt = F32x4::splat(t);
 
@@ -243,10 +300,10 @@ impl<'s> CubicSegment<'s> {
             // p0123 = lerp(p012, p123, t)
             let p0123 = p012p123 + tttt * (p123 - p012p123);
 
-            baseline0 = LineSegmentF32(p0p3.concat_xy_xy(p0123));
-            ctrl0 = LineSegmentF32(p01p12.concat_xy_xy(p012p123));
-            baseline1 = LineSegmentF32(p0123.concat_xy_zw(p0p3));
-            ctrl1 = LineSegmentF32(p012p123.concat_zw_zw(p12p23));
+            baseline0 = LineSegment2F(p0p3.concat_xy_xy(p0123));
+            ctrl0 = LineSegment2F(p01p12.concat_xy_xy(p012p123));
+            baseline1 = LineSegment2F(p0123.concat_xy_zw(p0p3));
+            ctrl1 = LineSegment2F(p012p123.concat_zw_zw(p12p23));
         }
 
         (
@@ -277,7 +334,7 @@ impl<'s> CubicSegment<'s> {
 
     // FIXME(pcwalton): Use Horner's method!
     #[inline]
-    pub fn sample(self, t: f32) -> Point2DF32 {
+    pub fn sample(self, t: f32) -> Vector2F {
         self.split(t).0.baseline.to()
     }
 

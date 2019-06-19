@@ -11,9 +11,9 @@
 //! A minimal cross-platform windowing layer.
 
 use gl::types::GLuint;
-use pathfinder_geometry::basic::point::Point2DI32;
-use pathfinder_geometry::basic::rect::RectI32;
-use pathfinder_geometry::basic::transform3d::{Perspective, Transform3DF32};
+use pathfinder_geometry::basic::vector::Vector2I;
+use pathfinder_geometry::basic::rect::RectI;
+use pathfinder_geometry::basic::transform3d::{Perspective, Transform3DF};
 use pathfinder_gl::GLVersion;
 use pathfinder_gpu::resources::ResourceLoader;
 use rayon::ThreadPoolBuilder;
@@ -25,7 +25,7 @@ pub trait Window {
         0
     }
 
-    fn viewport(&self, view: View) -> RectI32;
+    fn viewport(&self, view: View) -> RectI;
     fn make_current(&mut self, view: View);
     fn present(&mut self);
     fn resource_loader(&self) -> &dyn ResourceLoader;
@@ -34,7 +34,9 @@ pub trait Window {
     fn present_open_svg_dialog(&mut self);
     fn run_save_dialog(&self, extension: &str) -> Result<PathBuf, ()>;
 
-    fn adjust_thread_pool_settings(&self, _: &mut ThreadPoolBuilder) {}
+    fn adjust_thread_pool_settings(&self, builder: ThreadPoolBuilder) -> ThreadPoolBuilder {
+        builder
+    }
 }
 
 pub enum Event {
@@ -42,10 +44,10 @@ pub enum Event {
     WindowResized(WindowSize),
     KeyDown(Keycode),
     KeyUp(Keycode),
-    MouseDown(Point2DI32),
-    MouseMoved(Point2DI32),
-    MouseDragged(Point2DI32),
-    Zoom(f32, Point2DI32),
+    MouseDown(Vector2I),
+    MouseMoved(Vector2I),
+    MouseDragged(Vector2I),
+    Zoom(f32, Vector2I),
     Look {
         pitch: f32,
         yaw: f32,
@@ -67,13 +69,13 @@ pub enum Keycode {
 
 #[derive(Clone, Copy, Debug)]
 pub struct WindowSize {
-    pub logical_size: Point2DI32,
+    pub logical_size: Vector2I,
     pub backing_scale_factor: f32,
 }
 
 impl WindowSize {
     #[inline]
-    pub fn device_size(&self) -> Point2DI32 {
+    pub fn device_size(&self) -> Vector2I {
         self.logical_size
             .to_f32()
             .scale(self.backing_scale_factor)
@@ -93,7 +95,7 @@ pub struct OcularTransform {
     pub perspective: Perspective,
 
     // The view transform which converts from world coordinates to camera coordinates
-    pub modelview_to_eye: Transform3DF32,
+    pub modelview_to_eye: Transform3DF,
 }
 
 #[derive(Clone)]

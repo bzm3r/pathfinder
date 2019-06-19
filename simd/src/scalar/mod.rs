@@ -89,6 +89,26 @@ impl F32x4 {
         ])
     }
 
+    #[inline]
+    pub fn round(self) -> F32x4 {
+        F32x4([
+            self[0].round(),
+            self[1].round(),
+            self[2].round(),
+            self[3].round(),
+        ])
+    }
+
+    #[inline]
+    pub fn sqrt(self) -> F32x4 {
+        F32x4([
+            self[0].sqrt(),
+            self[1].sqrt(),
+            self[2].sqrt(),
+            self[3].sqrt(),
+        ])
+    }
+
     // Packed comparisons
 
     #[inline]
@@ -162,11 +182,6 @@ impl F32x4 {
     #[inline]
     pub fn concat_wz_yx(self, other: F32x4) -> F32x4 {
         F32x4([self[3], self[2], other[1], other[0]])
-    }
-
-    #[inline]
-    pub fn cross(&self, other: F32x4) -> F32x4 {
-        unimplemented!()
     }
 }
 

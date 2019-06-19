@@ -1,4 +1,4 @@
-// pathfinder/canvas_text/src/main.rs
+// pathfinder/examples/canvas_text/src/main.rs
 //
 // Copyright © 2019 The Pathfinder Project Developers.
 //
@@ -8,9 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use pathfinder_canvas::{CanvasRenderingContext2D, Path2D};
-use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
-use pathfinder_geometry::basic::rect::RectF32;
+use pathfinder_canvas::{CanvasFontContext, CanvasRenderingContext2D, TextAlign};
+use pathfinder_geometry::basic::vector::{Vector2F, Vector2I};
 use pathfinder_geometry::color::ColorF;
 use pathfinder_gl::{GLDevice, GLVersion};
 use pathfinder_gpu::resources::FilesystemResourceLoader;
@@ -34,7 +33,7 @@ fn main() {
     gl_attributes.set_context_version(3, 3);
 
     // Open a window.
-    let window_size = Point2DI32::new(640, 480);
+    let window_size = Vector2I::new(640, 480);
     let window = video.window("Text example", window_size.x() as u32, window_size.y() as u32)
                       .opengl()
                       .build()
@@ -54,15 +53,16 @@ fn main() {
     renderer.device.clear(&ClearParams { color: Some(ColorF::white()), ..ClearParams::default() });
 
     // Make a canvas. We're going to draw some text.
-    let mut canvas = CanvasRenderingContext2D::new(window_size.to_f32());
+    let mut canvas = CanvasRenderingContext2D::new(CanvasFontContext::new(), window_size.to_f32());
 
     // Draw the text.
     canvas.set_font_size(32.0);
-    canvas.fill_text("Hello Pathfinder!", Point2DF32::new(32.0, 48.0));
-    canvas.stroke_text("Goodbye Pathfinder!", Point2DF32::new(32.0, 96.0));
+    canvas.fill_text("Hello Pathfinder!", Vector2F::new(32.0, 48.0));
+    canvas.set_text_align(TextAlign::Right);
+    canvas.stroke_text("Goodbye Pathfinder!", Vector2F::new(608.0, 464.0));
 
     // Render the canvas to screen.
-    let scene = SceneProxy::new(canvas.into_scene(), RayonExecutor);
+    let scene = SceneProxy::from_scene(canvas.into_scene(), RayonExecutor);
     scene.build_and_render(&mut renderer, RenderOptions::default());
     window.gl_swap_window();
 

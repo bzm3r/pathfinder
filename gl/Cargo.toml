@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2018"
 authors = ["Patrick Walton <pcwalton@mimiga.net>"]
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 gl = "0.6"
-rustache = "0.1"
 
 [dependencies.image]
 version = "0.21"

@@ -13,18 +13,22 @@
 #[macro_use]
 extern crate log;
 
-use crate::camera::{Camera, Mode};
+// Mode is used in Options, so has to be public
+pub use crate::camera::Mode;
+
+use crate::camera::Camera;
 use crate::concurrent::DemoExecutor;
 use crate::device::{GroundProgram, GroundVertexArray};
 use crate::ui::{DemoUIModel, DemoUIPresenter, ScreenshotInfo, ScreenshotType, UIAction};
 use crate::window::{Event, Keycode, SVGPath, Window, WindowSize};
 use clap::{App, Arg};
-use pathfinder_geometry::basic::point::{Point2DF32, Point2DI32};
-use pathfinder_geometry::basic::rect::RectF32;
-use pathfinder_geometry::basic::transform2d::Transform2DF32;
+use pathfinder_geometry::basic::vector::{Vector2F, Vector2I};
+use pathfinder_geometry::basic::rect::RectF;
+use pathfinder_geometry::basic::transform2d::Transform2DF;
+use pathfinder_geometry::basic::transform3d::Transform3DF;
 use pathfinder_geometry::color::ColorU;
 use pathfinder_gl::GLDevice;
-use pathfinder_gpu::PfDevice;
+use pathfinder_gpu::Device;
 use pathfinder_gpu::resources::ResourceLoader;
 use pathfinder_renderer::concurrent::scene_proxy::{RenderCommandStream, SceneProxy};
 use pathfinder_renderer::gpu::renderer::{DestFramebuffer, RenderStats, RenderTime, Renderer};
@@ -49,6 +53,9 @@ const CAMERA_VELOCITY: f32 = 0.02;
 const CAMERA_SCALE_SPEED_2D: f32 = 6.0;
 // How much the scene is scaled when a zoom button is clicked.
 const CAMERA_ZOOM_AMOUNT_2D: f32 = 0.1;
+
+// Half of the eye separation distance.
+const DEFAULT_EYE_OFFSET: f32 = 0.025;
 
 const LIGHT_BG_COLOR: ColorU = ColorU {
     r: 248,
@@ -99,7 +106,7 @@ pub struct DemoApp<W> where W: Window {
     pub dirty: bool,
     expire_message_event_id: u32,
     message_epoch: u32,
-    last_mouse_position: Point2DI32,
+    last_mouse_position: Vector2I,
 
     current_frame: Option<Frame>,
     build_time: Option<Duration>,
@@ -110,7 +117,7 @@ pub struct DemoApp<W> where W: Window {
     scene_proxy: SceneProxy,
     renderer: Renderer<GLDevice>,
 
-    scene_framebuffer: Option<<GLDevice as PfDevice>::Framebuffer>,
+    scene_framebuffer: Option<<GLDevice as Device>::Framebuffer>,
 
     ground_program: GroundProgram<GLDevice>,
     ground_vertex_array: GroundVertexArray<GLDevice>,
@@ -143,12 +150,13 @@ impl<W> DemoApp<W> where W: Window {
                                                                   viewport.size());
         let camera = Camera::new(options.mode, scene_metadata.view_box, viewport.size());
 
-        let scene_proxy = SceneProxy::new(built_svg.scene, executor);
+        let scene_proxy = SceneProxy::from_scene(built_svg.scene, executor);
 
         let ground_program = GroundProgram::new(&renderer.device, resources);
         let ground_vertex_array = GroundVertexArray::new(&renderer.device,
                                                          &ground_program,
-                                                         &renderer.quad_vertex_positions_buffer());
+                                                         &renderer.quad_vertex_positions_buffer(),
+                                                         &renderer.quad_vertex_indices_buffer());
 
         let mut ui_model = DemoUIModel::new(&options);
 
@@ -180,7 +188,7 @@ impl<W> DemoApp<W> where W: Window {
             dirty: true,
             expire_message_event_id,
             message_epoch,
-            last_mouse_position: Point2DI32::default(),
+            last_mouse_position: Vector2I::default(),
 
             current_frame: None,
             build_time: None,
@@ -243,9 +251,9 @@ impl<W> DemoApp<W> where W: Window {
             dilation: if self.ui_model.stem_darkening_effect_enabled {
                 let font_size = APPROX_FONT_SIZE * self.window_size.backing_scale_factor;
                 let (x, y) = (STEM_DARKENING_FACTORS[0], STEM_DARKENING_FACTORS[1]);
-                Point2DF32::new(x, y).scale(font_size)
+                Vector2F::new(x, y).scale(font_size)
             } else {
-                Point2DF32::default()
+                Vector2F::default()
             },
             subpixel_aa_enabled: self.ui_model.subpixel_aa_effect_enabled,
         };
@@ -266,7 +274,7 @@ impl<W> DemoApp<W> where W: Window {
                 Event::WindowResized(new_size) => {
                     self.window_size = new_size;
                     let viewport = self.window.viewport(self.ui_model.mode.view(0));
-                    self.scene_proxy.set_view_box(RectF32::new(Point2DF32::default(),
+                    self.scene_proxy.set_view_box(RectF::new(Vector2F::default(),
                                                                viewport.size().to_f32()));
                     self.renderer
                         .set_main_framebuffer_size(self.window_size.device_size());
@@ -303,7 +311,7 @@ impl<W> DemoApp<W> where W: Window {
                         let position = position.to_f32().scale(backing_scale_factor);
                         *transform = transform.post_translate(-position);
                         let scale_delta = 1.0 + d_dist * CAMERA_SCALE_SPEED_2D;
-                        *transform = transform.post_scale(Point2DF32::splat(scale_delta));
+                        *transform = transform.post_scale(Vector2F::splat(scale_delta));
                         *transform = transform.post_translate(position);
                     }
                 }
@@ -319,11 +327,23 @@ impl<W> DemoApp<W> where W: Window {
                 }
                 Event::SetEyeTransforms(new_eye_transforms) => {
                     if let Camera::ThreeD {
+                        ref mut scene_transform,
                         ref mut eye_transforms,
                         ..
                     } = self.camera
                     {
                         *eye_transforms = new_eye_transforms;
+                        // Calculate the new scene transform by lerp'ing the eye transforms.
+                        *scene_transform = eye_transforms[0];
+                        for (index, eye_transform) in eye_transforms.iter().enumerate().skip(1) {
+                            let weight = 1.0 / (index + 1) as f32;
+                            scene_transform.perspective.transform = scene_transform.perspective.transform.lerp(weight, &eye_transform.perspective.transform);
+                            scene_transform.modelview_to_eye = scene_transform.modelview_to_eye.lerp(weight, &eye_transform.modelview_to_eye);
+                         }
+                        // TODO: calculate the eye offset from the eye transforms?
+                        let z_offset = -DEFAULT_EYE_OFFSET * scene_transform.perspective.transform.c0.x();
+                        scene_transform.modelview_to_eye = scene_transform.modelview_to_eye
+                            .pre_mul(&Transform3DF::from_translation(0.0, 0.0, z_offset));
                     }
                 }
                 Event::KeyDown(Keycode::Alphanumeric(b'w')) => {
@@ -430,7 +450,7 @@ impl<W> DemoApp<W> where W: Window {
         ui_events
     }
 
-    fn process_mouse_position(&mut self, new_position: Point2DI32) -> MousePosition {
+    fn process_mouse_position(&mut self, new_position: Vector2I) -> MousePosition {
         let absolute = new_position.scale(self.window_size.backing_scale_factor as i32);
         let relative = absolute - self.last_mouse_position;
         self.last_mouse_position = absolute;
@@ -556,7 +576,7 @@ impl<W> DemoApp<W> where W: Window {
             }
             UIAction::ZoomIn => {
                 if let Camera::TwoD(ref mut transform) = self.camera {
-                    let scale = Point2DF32::splat(1.0 + CAMERA_ZOOM_AMOUNT_2D);
+                    let scale = Vector2F::splat(1.0 + CAMERA_ZOOM_AMOUNT_2D);
                     let center = center_of_window(&self.window_size);
                     *transform = transform
                         .post_translate(-center)
@@ -567,7 +587,7 @@ impl<W> DemoApp<W> where W: Window {
             }
             UIAction::ZoomOut => {
                 if let Camera::TwoD(ref mut transform) = self.camera {
-                    let scale = Point2DF32::splat(1.0 - CAMERA_ZOOM_AMOUNT_2D);
+                    let scale = Vector2F::splat(1.0 - CAMERA_ZOOM_AMOUNT_2D);
                     let center = center_of_window(&self.window_size);
                     *transform = transform
                         .post_translate(-center)
@@ -578,7 +598,7 @@ impl<W> DemoApp<W> where W: Window {
             }
             UIAction::ZoomActualSize => {
                 if let Camera::TwoD(ref mut transform) = self.camera {
-                    *transform = Transform2DF32::default();
+                    *transform = Transform2DF::default();
                     self.dirty = true;
                 }
             }
@@ -728,7 +748,7 @@ fn load_scene(resource_loader: &dyn ResourceLoader, input_path: &SVGPath) -> Bui
     BuiltSVG::from_tree(Tree::from_data(&data, &UsvgOptions::default()).unwrap())
 }
 
-fn center_of_window(window_size: &WindowSize) -> Point2DF32 {
+fn center_of_window(window_size: &WindowSize) -> Vector2F {
     window_size.device_size().to_f32().scale(0.5)
 }
 
@@ -799,17 +819,17 @@ impl BackgroundColor {
 }
 
 struct SceneMetadata {
-    view_box: RectF32,
+    view_box: RectF,
     monochrome_color: Option<ColorU>,
 }
 
 impl SceneMetadata {
     // FIXME(pcwalton): The fact that this mutates the scene is really ugly!
     // Can we simplify this?
-    fn new_clipping_view_box(scene: &mut Scene, viewport_size: Point2DI32) -> SceneMetadata {
+    fn new_clipping_view_box(scene: &mut Scene, viewport_size: Vector2I) -> SceneMetadata {
         let view_box = scene.view_box();
         let monochrome_color = scene.monochrome_color();
-        scene.set_view_box(RectF32::new(Point2DF32::default(), viewport_size.to_f32()));
+        scene.set_view_box(RectF::new(Vector2F::default(), viewport_size.to_f32()));
         SceneMetadata { view_box, monochrome_color }
     }
 }

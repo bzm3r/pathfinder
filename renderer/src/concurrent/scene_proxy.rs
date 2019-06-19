@@ -24,7 +24,7 @@ use crate::gpu::renderer::Renderer;
 use crate::gpu_data::RenderCommand;
 use crate::options::{RenderCommandListener, RenderOptions};
 use crate::scene::Scene;
-use pathfinder_geometry::basic::rect::RectF32;
+use pathfinder_geometry::basic::rect::RectF;
 use pathfinder_gpu::Device;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -36,7 +36,12 @@ pub struct SceneProxy {
 }
 
 impl SceneProxy {
-    pub fn new<E>(scene: Scene, executor: E) -> SceneProxy where E: Executor + Send + 'static {
+    pub fn new<E>(executor: E) -> SceneProxy where E: Executor + Send + 'static {
+        SceneProxy::from_scene(Scene::new(), executor)
+    }
+
+    pub fn from_scene<E>(scene: Scene, executor: E) -> SceneProxy
+                         where E: Executor + Send + 'static {
         let (main_to_worker_sender, main_to_worker_receiver) = mpsc::channel();
         thread::spawn(move || scene_thread(scene, executor, main_to_worker_receiver));
         SceneProxy { sender: main_to_worker_sender }
@@ -48,7 +53,7 @@ impl SceneProxy {
     }
 
     #[inline]
-    pub fn set_view_box(&self, new_view_box: RectF32) {
+    pub fn set_view_box(&self, new_view_box: RectF) {
         self.sender.send(MainToWorkerMsg::SetViewBox(new_view_box)).unwrap();
     }
 
@@ -78,9 +83,11 @@ impl SceneProxy {
     #[inline]
     pub fn build_and_render<D>(&self, renderer: &mut Renderer<D>, options: RenderOptions)
                                where D: Device {
+        renderer.begin_scene();
         for command in self.build_with_stream(options) {
             renderer.render_command(&command)
         }
+        renderer.end_scene();
     }
 
     pub fn as_svg(&self) -> Vec<u8> {
@@ -110,7 +117,7 @@ fn scene_thread<E>(mut scene: Scene,
 
 enum MainToWorkerMsg {
     ReplaceScene(Scene),
-    SetViewBox(RectF32),
+    SetViewBox(RectF),
     Build(RenderOptions, Box<dyn RenderCommandListener>),
     GetSVG(Sender<Vec<u8>>),
 }
