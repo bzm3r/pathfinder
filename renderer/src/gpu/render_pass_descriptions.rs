@@ -105,9 +105,9 @@ pub fn create_draw_pass_no_postprocess_desc() -> pfgpu::render_pass::RenderPassD
 
     pfgpu::render_pass::RenderPassDescription {
         attachments: vec![fill_texture, dest],
-        num_subpasses: 1,
+        num_subpasses: 2,
         inputs_per_subpass: vec![vec![(0, hal::image::Layout::ShaderReadOnlyOptimal)],],
-        colors_per_subpass: vec![vec![(1, hal::image::Layout::Present)],],
+        colors_per_subpass: vec![vec![(1, hal::image::Layout::ColorAttachmentOptimal)],],
         preserves_per_subpass: vec![Vec::<hal::pass::AttachmentId>::new(), Vec::<hal::pass::AttachmentId>::new()],
     }
 }

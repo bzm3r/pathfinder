@@ -83,6 +83,8 @@ pub struct SwapchainState {
     tile_alpha_monochrome_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     stencil_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     postprocess_pipeline: Option<<Backend as hal::Backend>::GraphicsPipeline>,
+    acquire_image_fence: <Backend as hal::Backend>::Fence,
+    extent: hal::pso::Rect,
 }
 
 impl SwapchainState {
@@ -139,6 +141,13 @@ impl SwapchainState {
                     .height
                     .min(window_client_area.height as u32),
             }
+        };
+
+        let extent_rect = hal::pso::Rect {
+            x: 0,
+            y: 0,
+            w: extent.width as i16,
+            h: extent.height as i16,
         };
 
         let swapchain_config =
@@ -250,6 +259,8 @@ impl SwapchainState {
             .map(|_| device.create_fence(true).unwrap())
             .collect();
 
+        let acquire_image_fence = device.create_fence(false).unwrap();
+
         SwapchainState {
             swapchain_images,
             swapchain_image_views,
@@ -263,21 +274,28 @@ impl SwapchainState {
             tile_alpha_monochrome_pipeline,
             stencil_pipeline,
             postprocess_pipeline,
+            extent: extent_rect,
+            acquire_image_fence
         }
     }
 
-    pub fn swapchain(&self) -> &<Backend as hal::Backend>::Swapchain {
+    fn swapchain(&self) -> &<Backend as hal::Backend>::Swapchain {
         &self.swapchain
     }
 
-    pub unsafe fn acquire_image(
+    unsafe fn acquire_image(
         &mut self,
-        index: usize,
+        device: &<Backend as hal::Backend>::Device,
         timeout_ns: u64,
-    ) -> std::result::Result<(u32, std::option::Option<hal::window::Suboptimal>), hal::AcquireError>
+    ) -> (u32, bool)
     {
-        self.swapchain
-            .acquire_image(timeout_ns, None, Some(&self.in_flight_fences[index]))
+        let (ix, suboptimal) = self.swapchain
+            .acquire_image(timeout_ns, None, &self.acquire_image_fence).unwrap();
+
+        device.wait_for_fence(&self.acquire_image_fence).unwrap();
+        device.reset_fence(&self.acquire_iamge_fence);
+
+        (ix, suboptimal.is_some())
     }
 
     unsafe fn destroy_swapchain_state(
@@ -298,12 +316,15 @@ impl SwapchainState {
             tile_alpha_monochrome_pipeline,
             stencil_pipeline,
             postprocess_pipeline,
-            //submission_command_buffers
+            extent,
+            acquire_image_fence
         } = swapchain_state;
 
         for f in in_flight_fences.into_iter() {
             device.destroy_fence(f);
         }
+
+        device.destroy_fence(acquire_image_fence);
 
         for iv in swapchain_image_views.into_iter() {
             device.destroy_image_view(iv);
@@ -363,16 +384,21 @@ pub struct GpuState<'a> {
     stencil_pipeline_description: PipelineDescription,
     postprocess_pipeline_description: Option<PipelineDescription>,
     swapchain_state: Takeable<SwapchainState>,
-    quad_vertex_positions_buffer_pool: BufferPool<'a>,
-    quad_vertex_indices_buffer_pool: BufferPool<'a>,
-    tile_solid_vertex_buffer_pool: BufferPool<'a>,
-    tile_alpha_vertex_buffer_pool: BufferPool<'a>,
-    stencil_vertex_buffer_pool: BufferPool<'a>,
+    quad_vertex_positions_buffer_pool: BufferPool,
+    quad_vertex_indices_buffer_pool: BufferPool,
+    tile_solid_vertex_buffer_pool: BufferPool,
+    tile_alpha_vertex_buffer_pool: BufferPool,
+    stencil_vertex_buffer_pool: BufferPool,
+    transient_buffer_pool: BufferPool,
     fill_pipeline: <Backend as hal::Backend>::GraphicsPipeline,
     fill_pipeline_layout_state: PipelineLayoutState,
     fill_framebuffer: Framebuffer,
-    fill_vertex_buffer_pool: BufferPool<'a>,
+    fill_vertex_buffer_pool: BufferPool,
     fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
+    area_lut_texture: Image,
+    gamma_lut_texture: Image,
+    paint_texture: Image,
+    stencil_texture: Image,
     monochrome: bool,
     current_frame_index: usize,
 }
@@ -514,6 +540,19 @@ impl<'a> GpuState<'a> {
             hal::buffer::Usage::VERTEX,
         );
 
+        let transient_buffer_pool = BufferPool::new(
+            &mut adapter,
+            &device,
+            max_quad_vertex_positions_buffer_size,
+            swapchain_state.in_flight_fences.len() as u8,
+            hal::buffer::Usage::TRANSIENT,
+        );
+
+        let area_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, "area-lut");
+        let gamma_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, "gamma-lut");
+        let stencil_texture = Image::new(&adapter, &device, stencil_texture_format, stencil_texture_size);
+        let paint_texture = Image::new(&adapter, &device, paint_texture_format, paint_texture_size);
+
         GpuState {
             _instance: instance,
             window,
@@ -545,6 +584,11 @@ impl<'a> GpuState<'a> {
             fill_framebuffer_size,
             monochrome,
             current_frame_index,
+            transient_buffer_pool,
+            area_lut_texture,
+            gamma_lut_texture,
+            stencil_texture,
+            paint_texture,
         }
     }
 
@@ -598,8 +642,11 @@ impl<'a> GpuState<'a> {
         (device, queue_group)
     }
 
-    pub unsafe fn create_texture_from_png(
-        &mut self,
+    unsafe fn create_texture_from_png(
+        adapter: &mut hal::Adapter<Backend>,
+        device: &<Backend as hal::Backend>::Device,
+        command_pool: &hal::CommandPool<Backend, hal::Graphics>,
+        command_queue: &<Backend as hal::Backend>::CommandQueue,
         resources: &dyn resources::ResourceLoader,
         name: &str,
     ) -> Image {
@@ -612,10 +659,10 @@ impl<'a> GpuState<'a> {
             pfgeom::basic::point::Point2DI32::new(image.width() as i32, image.height() as i32);
 
         Image::new_from_data(
-            &self.adapter,
-            &self.device,
-            &mut self.command_pool,
-            &mut self.command_queue,
+            adapter,
+            device,
+            command_pool,
+            command_queue,
             size,
             pixel_size,
             &data,
@@ -681,13 +728,24 @@ impl<'a> GpuState<'a> {
 
     pub unsafe fn present(
         &mut self,
+        solid: bool,
     ) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError> {
         self.current_frame_index = self.request_free_frame_index().unwrap();
 
-        let (image_index, _) = self
+        let image_index = match self
             .swapchain_state
-            .acquire_image(self.current_frame_index, core::u64::MAX)
-            .unwrap();
+            .acquire_image(core::u64::MAX) {
+            (_, true) => {
+                self.recreate_swapchain();
+                let (ix, _) = self.swapchain_state.acquire_image(core::u64::MAX);
+                ix
+            },
+            (ix, false) => {
+                ix
+            },
+        };
+
+        self.submit_draws(&self.swapchain_state.swapchain_framebuffers[image_index]);
 
         let present_result = self
             .command_queue
@@ -714,9 +772,25 @@ impl<'a> GpuState<'a> {
         &self.fill_pipeline
     }
 
-    pub unsafe fn upload_vertex_buffer_data<T>(
+    pub unsafe fn upload_fill_vertex_buffer_data<T>(
         &mut self,
         data: &[FillBatchPrimitive],
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
+        self.fill_vertex_buffer_pool.upload_data(
+            &self.device,
+            data,
+            first_vertex..vertex_count,
+            first_instance..instance_count,
+        );
+    }
+
+    pub unsafe fn upload_tile_solid_vertex_buffer_data<T>(
+        &mut self,
+        data: &[SolidTileBatchPrimitive],
         vertex_count: u32,
         instance_count: u32,
         first_vertex: u32,
@@ -728,83 +802,27 @@ impl<'a> GpuState<'a> {
             data,
             first_vertex..vertex_count,
             first_instance..instance_count,
-            fence,
         );
     }
 
-    pub unsafe fn submit_solid_tile_draws(&mut self) {
-        let mut cmd_buffer = self
-            .command_pool
-            .acquire_command_buffer::<hal::command::OneShot>()
-            .into_raw();
-
-        cmd_buffer.begin(
-            hal::command::CommandBufferFlags::ONE_TIME_SUBMIT,
-            hal::command::CommandBufferInheritanceInfo::default(),
+    pub unsafe fn upload_tile_alpha_vertex_buffer_data<T>(
+        &mut self,
+        data: &[AlphaTileBatchPrimitive],
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+        fence: Option<&'a <Backend as hal::Backend>::Fence>,
+    ) {
+        self.fill_vertex_buffer_pool.upload_data(
+            &self.device,
+            data,
+            first_vertex..vertex_count,
+            first_instance..instance_count,
         );
-        cmd_buffer.begin_render_pass(
-            self.swapchain_state.draw_pipeline_layout_state.render_pass(),
-            self.swapchain_state.draw_framebuffer(),
-            self.swapchain_state.extent,
-            &[],
-            hal::command::SubpassContents::Inline,
-        );
-
-        if self.monochrome {
-            cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_monochrome_pipeline);
-        } else {
-            cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_multicolor_pipeline);
-        }
-
-
-        cmd_buffer.bind_graphics_descriptor_sets(
-            self.swapchain_state.draw_pipeline_layout_state.pipeline_layout(),
-            0,
-            self.swapchain_state.draw_pipeline_layout_state.descriptor_sets(),
-            &[],
-        );
-
-        cmd_buffer.bind_vertex_buffer(0, vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0), 0)]);
-        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
-            buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0),
-            offset: 0,
-            index_type: hal::IndexType::U32,
-        });
-
-        for (vertex_count, instance_count, ix) in
-            self.tile_solid_vertex_buffer_pool.submission_list.iter()
-            {
-                cmd_buffer.bind_vertex_buffers(
-                    0,
-                    vec![(self.tile_solid_vertex_buffer_pool.get_buffer(*ix).buffer(), 0)],
-                );
-                cmd_buffer.draw(vertex_count.clone(), instance_count.clone());
-            }
-
-        if self.postprocessing_needed {
-            cmd_buffer.next_subpass(hal::command::SubpassContents::Inline);
-
-            cmd_buffer.bind_graphics_pipeline(self.swapchain_state.postprocess_pipeline.as_ref().unwrap());
-        }
-
-        cmd_buffer.end_render_pass();
-        cmd_buffer.finish();
-
-        let submission = hal::queue::Submission {
-            command_buffers: vec![&cmd_buffer],
-            wait_semaphores: None,
-            signal_semaphores: None,
-        };
-
-        self.command_queue
-            .submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, None);
     }
 
-    pub unsafe fn submit_alpha_tile_draws(&mut self) {
-
-    }
-
-    pub unsafe fn submit_fill_draws(&mut self) {
+    pub unsafe fn submit_fills(&mut self) {
         let mut cmd_buffer = self
             .command_pool
             .acquire_command_buffer::<hal::command::OneShot>()
@@ -837,22 +855,20 @@ impl<'a> GpuState<'a> {
             hal::command::SubpassContents::Inline,
         );
 
-        cmd_buffer.bind_vertex_buffer(0, vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0), 0)]);
-        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
-           buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0),
-            offset: 0,
-            index_type: hal::IndexType::U32,
-        });
-
         for (vertex_count, instance_count, ix) in
             self.fill_vertex_buffer_pool.submission_list.iter()
-        {
-            cmd_buffer.bind_vertex_buffers(
-                0,
-                vec![(self.fill_vertex_buffer_pool.get_buffer(*ix).buffer(), 0)],
-            );
-            cmd_buffer.draw(vertex_count.clone(), instance_count.clone());
-        }
+            {
+                cmd_buffer.bind_vertex_buffers(
+                    0,
+                    vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0).buffer(), 0), (self.fill_vertex_buffer_pool.get_buffer(*ix).buffer(), 0)],
+                );
+                cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
+                    buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0).buffer(),
+                    offset: 0,
+                    index_type: hal::IndexType::U32,
+                });
+                cmd_buffer.draw(vertex_count.clone(), instance_count.clone());
+            }
 
         cmd_buffer.end_render_pass();
         cmd_buffer.finish();
@@ -865,6 +881,107 @@ impl<'a> GpuState<'a> {
 
         self.command_queue
             .submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, None);
+    }
+
+    pub fn submit_tiles(&mut self, draw_framebuffer: &<Backend as hal::Backend>::Framebuffer, solid: bool) {
+        let mut cmd_buffer = self
+            .command_pool
+            .acquire_command_buffer::<hal::command::OneShot>()
+            .into_raw();
+
+        cmd_buffer.begin(
+            hal::command::CommandBufferFlags::ONE_TIME_SUBMIT,
+            hal::command::CommandBufferInheritanceInfo::default(),
+        );
+        cmd_buffer.begin_render_pass(
+            self.swapchain_state.draw_pipeline_layout_state.render_pass(),
+            draw_framebuffer,
+            self.swapchain_state.extent,
+            &[],
+            hal::command::SubpassContents::Inline,
+        );
+
+        cmd_buffer.bind_graphics_descriptor_sets(
+            self.swapchain_state.draw_pipeline_layout_state.pipeline_layout(),
+            0,
+            self.swapchain_state.draw_pipeline_layout_state.descriptor_sets(),
+            &[],
+        );
+
+        match (self.monochrome, solid) {
+            (true, true) => {
+                cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_monochrome_pipeline);
+            },
+            (true, false) => {
+                cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_alpha_monochrome_pipeline);
+            },
+            (false, true) => {
+                cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_solid_multicolor_pipeline);
+            },
+            (false, false) => {
+                cmd_buffer.bind_graphics_pipeline(&self.swapchain_state.tile_alpha_multicolor_pipeline);
+            }
+        }
+
+        let tile_buffer_pool = if solid {
+            &self.tile_solid_vertex_buffer_pool
+        } else {
+            &self.tile_alpha_vertex_buffer_pool
+        };
+
+        for (vertex_count, instance_count, ix) in
+            tile_buffer_pool.submission_list.iter()
+            {
+                cmd_buffer.bind_vertex_buffers(
+                    0,
+                    vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0).buffer(), 0), (self.tile_buffer_pool.get_buffer(*ix).buffer(), 0)],
+                );
+                cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
+                    buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0).buffer(),
+                    offset: 0,
+                    index_type: hal::IndexType::U32,
+                });
+
+                cmd_buffer.draw(vertex_count.clone(), instance_count.clone());
+            }
+
+        if self.postprocessing_needed {
+            cmd_buffer.next_subpass(hal::command::SubpassContents::Inline);
+
+            cmd_buffer.bind_graphics_pipeline(self.swapchain_state.postprocess_pipeline.as_ref().unwrap());
+
+            cmd_buffer.bind_vertex_buffers(0, vec![(self.quad_vertex_positions_buffer_pool.get_buffer(0), 0)]);
+            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView{
+                buffer: self.quad_vertex_indices_buffer_pool.get_buffer(0),
+                offset: 0,
+                index_type: hal::IndexType::U32,
+            });
+
+            cmd_buffer.draw(4, 1);
+        }
+
+        cmd_buffer.end_render_pass();
+        cmd_buffer.finish();
+
+        let submission = hal::queue::Submission {
+            command_buffers: vec![&cmd_buffer],
+            wait_semaphores: None,
+            signal_semaphores: None,
+        };
+
+        if solid {
+            self.command_queue
+                .submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, None);
+        } else {
+            self.command_queue
+                .submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, &self.swapchain_state.in_flight_fences[self.current_frame_index]);
+        }
+    }
+    
+    unsafe fn submit_draws(&mut self, draw_framebuffer: &<Backend as hal::Backend>::draw_framebuffer) {
+        self.submit_fills();
+        self.submit_tiles(draw_framebuffer, true);
+        self.submit_tiles(draw_framebuffer, false);
     }
 
     pub unsafe fn destroy_gpu_state(mut gpu_state: GpuState) {
@@ -1031,24 +1148,22 @@ pub enum Memory {
     Direct(<Backend as hal::Backend>::Memory),
 }
 
-pub struct Buffer<'a> {
+pub struct Buffer {
     usage: hal::buffer::Usage,
     buffer_size: u64,
     memory: Memory,
     requirements: hal::memory::Requirements,
     buffer: <Backend as hal::Backend>::Buffer,
-    fence: Takeable<&'a <Backend as hal::Backend>::Fence>,
 }
 
-impl<'a> Buffer<'a> {
+impl Buffer {
     unsafe fn new(
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         buffer_size: u64,
         usage: hal::buffer::Usage,
         memory: Option<Memory>,
-        fence: Option<&'a <Backend as hal::Backend>::Fence>,
-    ) -> Buffer<'a> {
+    ) -> Buffer {
         let mut buffer = device.create_buffer(buffer_size, usage).unwrap();
         let requirements = device.get_buffer_requirements(&mut buffer);
 
@@ -1096,10 +1211,6 @@ impl<'a> Buffer<'a> {
             memory,
             requirements,
             buffer,
-            fence: match fence {
-                Some(f) => Takeable::new(f),
-                _ => Takeable::new_empty(),
-            },
         }
     }
 
@@ -1115,7 +1226,6 @@ impl<'a> Buffer<'a> {
         &mut self,
         device: &<Backend as hal::Backend>::Device,
         data: &[T],
-        fence: Option<&'a <Backend as hal::Backend>::Fence>,
     ) where
         T: Copy,
     {
@@ -1128,31 +1238,6 @@ impl<'a> Buffer<'a> {
             .unwrap();
         writer[0..data.len()].copy_from_slice(data);
         device.release_mapping_writer(writer).unwrap();
-
-        match Takeable::try_take(&mut self.fence) {
-            Some(f) => {
-                assert!(device.wait_for_fence(f, 20).unwrap());
-            }
-            _ => {}
-        }
-
-        match fence {
-            Some(f) => {
-                Takeable::insert(&mut self.fence, f);
-            }
-            _ => {}
-        }
-    }
-
-    pub unsafe fn signalled(
-        &mut self,
-        device: &<Backend as hal::Backend>::Device,
-        timeout_ns: u64,
-    ) -> bool {
-        match Takeable::try_take(&mut self.fence) {
-            Some(f) => device.wait_for_fence(f, timeout_ns).unwrap(),
-            _ => true,
-        }
     }
 
     pub fn memory_ref(&self) -> &<Backend as hal::Backend>::Memory {
@@ -1179,9 +1264,9 @@ impl<'a> Buffer<'a> {
     }
 }
 
-struct BufferPool<'a> {
+struct BufferPool {
     usage: hal::buffer::Usage,
-    pool: Vec<Buffer<'a>>,
+    pool: Vec<Buffer>,
     buffer_size: u64,
     memory: std::rc::Rc<<Backend as hal::Backend>::Memory>,
     pub submission_list: Vec<(
@@ -1191,14 +1276,14 @@ struct BufferPool<'a> {
     )>,
 }
 
-impl<'a> BufferPool<'a> {
+impl BufferPool {
     pub unsafe fn new(
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         buffer_size: u64,
         num_buffers: u8,
         usage: hal::buffer::Usage,
-    ) -> BufferPool<'a> {
+    ) -> BufferPool {
         let mut pool: Vec<Buffer> = vec![];
 
         let dummy_buffer = device
@@ -1270,7 +1355,6 @@ impl<'a> BufferPool<'a> {
         data: &[T],
         vertices: std::ops::Range<hal::VertexCount>,
         instances: std::ops::Range<hal::InstanceCount>,
-        fence: Option<&'a <Backend as hal::Backend>::Fence>,
     ) -> bool
     where
         T: Copy,
@@ -1281,7 +1365,7 @@ impl<'a> BufferPool<'a> {
             loop {
                 match self.get_free_buffer_index(device) {
                     Some(ix) => {
-                        self.pool[ix].upload_data(device, data, fence);
+                        self.pool[ix].upload_data(device, data);
                         self.submission_list.push((vertices, instances, ix));
                         break;
                     }
@@ -1294,7 +1378,7 @@ impl<'a> BufferPool<'a> {
         }
     }
 
-    pub fn get_buffer(&self, ix: usize) -> &'a Buffer {
+    pub fn get_buffer(&self, ix: usize) -> &Buffer {
         &(self.pool[ix])
     }
 
@@ -1387,7 +1471,6 @@ impl Image {
             &device,
             (size.x() * size.y()) as u64,
             hal::buffer::Usage::TRANSFER_SRC,
-            None,
             None,
         );
 
