@@ -15,7 +15,7 @@ use pathfinder_demo::Camera;
 use pathfinder_demo::CameraTransform3D;
 use pathfinder_gl::GLDevice;
 use pathfinder_renderer::gpu::renderer::Renderer;
-use pathfinder_geometry::basic::point::Point2DI32;
+use pathfinder_geometry::basic::vector::Vector2I;
 use pathfinder_geometry::basic::point::Point2DF32;
 use pathfinder_geometry::basic::point::Point3DF32;
 use pathfinder_geometry::basic::rect::RectI32;

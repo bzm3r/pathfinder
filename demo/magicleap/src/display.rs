@@ -10,7 +10,7 @@
 
 use std::error::Error;
 use std::io;
-use pathfinder_geometry::basic::point::Point2DI32;
+use pathfinder_geometry::basic::vector::Vector2I;
 use pathfinder_geometry::basic::rect::RectI32;
 use pathfinder_geometry::basic::transform3d::Perspective;
 use pathfinder_geometry::basic::transform3d::Transform3DF32;

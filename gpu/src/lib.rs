@@ -33,16 +33,21 @@ use pathfinder_simd as pfsimd;
 use takeable_option::Takeable;
 
 use pathfinder_geometry::basic::line_segment::{LineSegmentU4, LineSegmentU8};
-use pathfinder_geometry::basic::point::Point2DI32;
+use pathfinder_geometry::basic::vector::Vector2I;
 
 pub mod resources;
 
 #[derive(Clone)]
 pub struct RenderPassDescription {
+    // description of all attachments in ender Pass being described
     attachments: Vec<hal::pass::Attachment>,
+    // number of subpasses in Render Pass being described
     num_subpasses: usize,
+    // the color attachments (output targets) of each subpass
     colors_per_subpass: Vec<Vec<hal::pass::AttachmentRef>>,
+    // the input attachments of each subpass
     inputs_per_subpass: Vec<Vec<hal::pass::AttachmentRef>>,
+    // the attachments to be preserved by teach subpass
     preserves_per_subpass: Vec<Vec<hal::pass::AttachmentId>>
 }
 
@@ -361,7 +366,7 @@ impl SwapchainState {
 
         device.destroy_swapchain(swapchain);
 
-        command_pool.reset();
+        command_pool.reset(true);
     }
 }
 
@@ -394,7 +399,7 @@ pub struct GpuState<'a> {
     fill_pipeline_layout_state: PipelineLayoutState,
     fill_framebuffer: Framebuffer,
     fill_vertex_buffer_pool: BufferPool,
-    fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
+    fill_framebuffer_size: pfgeom::basic::vector::Vector2I,
     area_lut_texture: Image,
     gamma_lut_texture: Image,
     paint_texture: Image,
@@ -419,11 +424,15 @@ impl<'a> GpuState<'a> {
         tile_alpha_multicolor_pipeline_description: PipelineDescription,
         stencil_pipeline_description: PipelineDescription,
         postprocess_pipeline_description: Option<PipelineDescription>,
-        fill_framebuffer_size: pfgeom::basic::point::Point2DI32,
+        fill_framebuffer_size: pfgeom::basic::vector::Vector2I,
         max_quad_vertex_positions_buffer_size: u64,
         max_quad_vertex_indices_buffer_size: u64,
         max_fill_vertex_buffer_size: u64,
         max_tile_vertex_buffer_size: u64,
+        stencil_texture_format: hal::format::Format,
+        paint_texture_format: hal::format::Format,
+        stencil_texture_size: pfgeom::basic::vector::Vector2I,
+        paint_texture_size: pfgeom::basic::vector::Vector2I,
         monochrome: bool,
     ) -> GpuState<'a> {
         let instance = back::Instance::create(instance_name, 1);
@@ -548,8 +557,8 @@ impl<'a> GpuState<'a> {
             hal::buffer::Usage::TRANSIENT,
         );
 
-        let area_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, "area-lut");
-        let gamma_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, "gamma-lut");
+        let area_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, resources, "area-lut");
+        let gamma_lut_texture = GpuState::create_texture_from_png(&mut adapter, &device, &command_pool, &command_queue, resources, "gamma-lut");
         let stencil_texture = Image::new(&adapter, &device, stencil_texture_format, stencil_texture_size);
         let paint_texture = Image::new(&adapter, &device, paint_texture_format, paint_texture_size);
 
@@ -656,7 +665,7 @@ impl<'a> GpuState<'a> {
             .to_luma();
         let pixel_size = std::mem::size_of::<img_crate::Luma<u8>>();
         let size =
-            pfgeom::basic::point::Point2DI32::new(image.width() as i32, image.height() as i32);
+            pfgeom::basic::vector::Vector2I::new(image.width() as i32, image.height() as i32);
 
         Image::new_from_data(
             adapter,
@@ -734,10 +743,10 @@ impl<'a> GpuState<'a> {
 
         let image_index = match self
             .swapchain_state
-            .acquire_image(core::u64::MAX) {
+            .acquire_image(&self.device,core::u64::MAX) {
             (_, true) => {
                 self.recreate_swapchain();
-                let (ix, _) = self.swapchain_state.acquire_image(core::u64::MAX);
+                let (ix, _) = self.swapchain_state.acquire_image(&self.device,core::u64::MAX);
                 ix
             },
             (ix, false) => {
@@ -1323,7 +1332,6 @@ impl BufferPool {
                     memory_type_id,
                     memory.clone(),
                 )),
-                None,
             ));
         }
 
@@ -1402,7 +1410,9 @@ impl BufferPool {
 pub struct Image {
     image: <Backend as hal::Backend>::Image,
     memory: <Backend as hal::Backend>::Memory,
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
+    staging_buffer: Buffer,
+    upload_fence: <Backend as hal::Backend>::Fence,
 }
 
 impl Image {
@@ -1410,7 +1420,7 @@ impl Image {
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         texture_format: hal::format::Format,
-        size: pfgeom::basic::point::Point2DI32,
+        size: pfgeom::basic::vector::Vector2I,
     ) -> Image {
         // 3. Make an image with transfer_dst and SAMPLED usage
         let mut image = device
@@ -1448,24 +1458,6 @@ impl Image {
 
         device.bind_image_memory(&memory, 0, &mut image).unwrap();
 
-        Image {
-            image,
-            memory,
-            size,
-        }
-    }
-
-    unsafe fn new_from_data(
-        adapter: &hal::Adapter<Backend>,
-        device: &<Backend as hal::Backend>::Device,
-        command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>,
-        command_queue: &mut <Backend as hal::Backend>::CommandQueue,
-        size: pfgeom::basic::point::Point2DI32,
-        texel_size: usize,
-        data: &[u8],
-    ) -> Image {
-        let texture = Image::new(adapter, &device, hal::format::Format::R8Uint, size);
-
         let staging_buffer = Buffer::new(
             adapter,
             &device,
@@ -1474,10 +1466,30 @@ impl Image {
             None,
         );
 
+        let upload_fence = device.create_fence(false).unwrap();
+
+        Image {
+            image,
+            memory,
+            size,
+            staging_buffer,
+            upload_fence,
+        }
+    }
+
+    unsafe fn upload_data(
+        &mut self,
+        adapter: &hal::Adapter<Backend>,
+        device: &<Backend as hal::Backend>::Device,
+        command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>,
+        command_queue: &mut <Backend as hal::Backend>::CommandQueue,
+        texel_size: usize,
+        data: &[u8]
+    ) {
         let mut writer = device
             .acquire_mapping_writer::<u8>(
-                &staging_buffer.memory_ref(),
-                0..staging_buffer.requirements.size,
+                &self.staging_buffer.memory_ref(),
+                0..self.staging_buffer.requirements.size,
             )
             .unwrap();
         writer[0..data.len()].copy_from_slice(data);
@@ -1491,9 +1503,9 @@ impl Image {
         let image_barrier = hal::memory::Barrier::Image {
             states: (hal::image::Access::empty(), hal::image::Layout::Undefined)
                 ..(
-                    hal::image::Access::TRANSFER_WRITE,
-                    hal::image::Layout::TransferDstOptimal,
-                ),
+                hal::image::Access::TRANSFER_WRITE,
+                hal::image::Layout::TransferDstOptimal,
+            ),
             target: &texture.image,
             families: None,
             range: hal::image::SubresourceRange {
@@ -1542,9 +1554,9 @@ impl Image {
                 hal::image::Layout::TransferDstOptimal,
             )
                 ..(
-                    hal::image::Access::SHADER_READ,
-                    hal::image::Layout::ShaderReadOnlyOptimal,
-                ),
+                hal::image::Access::SHADER_READ,
+                hal::image::Layout::ShaderReadOnlyOptimal,
+            ),
             target: &texture.image,
             families: None,
             range: hal::image::SubresourceRange {
@@ -1571,13 +1583,23 @@ impl Image {
 
         command_queue.submit::<_, _, <Backend as hal::Backend>::Semaphore, _, _>(submission, None);
 
-        let upload_fence = device.create_fence(false).unwrap();
-
         device
-            .wait_for_fence(&upload_fence, core::u64::MAX)
+            .wait_for_fence(&self.upload_fence, core::u64::MAX)
             .unwrap();
+    }
 
-        device.destroy_fence(upload_fence);
+    unsafe fn new_from_data(
+        adapter: &hal::Adapter<Backend>,
+        device: &<Backend as hal::Backend>::Device,
+        command_pool: &mut hal::CommandPool<back::Backend, hal::Graphics>,
+        command_queue: &mut <Backend as hal::Backend>::CommandQueue,
+        size: pfgeom::basic::vector::Vector2I,
+        texel_size: usize,
+        data: &[u8],
+    ) -> Image {
+        let mut texture = Image::new(adapter, &device, hal::format::Format::R8Uint, size);
+
+        texture.upload_data(adapter, device, command_pool, command_queue, texel_size, data);
 
         texture
     }
@@ -1586,13 +1608,16 @@ impl Image {
         let Image {
             image: img,
             memory: mem,
-            ..
+            staging_buffer: b,
+            upload_fence: f,
         } = image;
         device.destroy_image(img);
         device.free_memory(mem);
+        Buffer::destroy_buffer(device, b);
+        device.destroy_fence(f);
     }
 
-    pub fn size(&self) -> pfgeom::basic::point::Point2DI32 {
+    pub fn size(&self) -> pfgeom::basic::vector::Vector2I {
         self.size
     }
 }
@@ -1608,7 +1633,7 @@ impl Framebuffer {
         adapter: &hal::Adapter<Backend>,
         device: &<Backend as hal::Backend>::Device,
         texture_format: hal::format::Format,
-        size: pfgeom::basic::point::Point2DI32,
+        size: pfgeom::basic::vector::Vector2I,
         render_pass: &<Backend as hal::Backend>::RenderPass,
     ) -> Framebuffer {
         let image = Image::new(adapter, device, texture_format, size);
@@ -1843,7 +1868,7 @@ unsafe fn compose_shader_module(
 
 #[derive(Clone)]
 pub struct PipelineDescription {
-    pub size: pfgeom::basic::point::Point2DI32,
+    pub size: pfgeom::basic::vector::Vector2I,
     pub shader_name: String,
     pub vertex_buffer_descriptions: Vec<hal::pso::VertexBufferDesc>,
     pub attribute_descriptions: Vec<hal::pso::AttributeDesc>,

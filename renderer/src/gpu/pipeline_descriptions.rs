@@ -196,7 +196,7 @@ fn generate_depth_test_for_stencil_shader() -> hal::pso::DepthTest {
 }
 
 pub unsafe fn create_fill_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("fill");
 
@@ -283,7 +283,7 @@ pub unsafe fn create_fill_pipeline_description(
 }
 
 pub unsafe fn create_solid_tile_multicolor_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("tile_solid_multicolor");
 
@@ -369,7 +369,7 @@ pub unsafe fn create_solid_tile_multicolor_pipeline_description(
 }
 
 pub unsafe fn create_solid_tile_monochrome_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("tile_solid_monochrome");
 
@@ -448,7 +448,7 @@ pub unsafe fn create_solid_tile_monochrome_pipeline_description(
 }
 
 pub unsafe fn create_alpha_tile_multicolor_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("tile_alpha_multicolor");
 
@@ -536,7 +536,7 @@ pub unsafe fn create_alpha_tile_multicolor_pipeline_description(
 }
 
 pub unsafe fn create_alpha_tile_monochrome_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("tile_alpha_monochrome");
 
@@ -621,7 +621,7 @@ pub unsafe fn create_alpha_tile_monochrome_pipeline_description(
 }
 
 pub unsafe fn create_postprocess_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("post");
 
@@ -686,7 +686,7 @@ pub unsafe fn create_postprocess_pipeline_description(
 }
 
 pub unsafe fn create_stencil_pipeline_description(
-    size: pfgeom::basic::point::Point2DI32,
+    size: pfgeom::basic::vector::Vector2I,
 ) -> pfgpu::pipeline::PipelineDesc {
     let shader_name = String::from("stencil");
 

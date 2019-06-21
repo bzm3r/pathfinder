@@ -132,57 +132,6 @@ impl Renderer {
             RenderCommand::Finish { .. } => {}
         }
     }
-
-    fn main_viewport(&self) -> pfgeom::basic::rect::RectI32 {
-        self.device.extent()
-    }
-
-    fn draw_viewport(&self) -> pfgeom::basic::rect::RectI32 {
-        let main_viewport = self.main_viewport();
-        match self.render_mode {
-            RenderMode::Monochrome {
-                defringing_kernel: Some(..),
-                ..
-            } => {
-                let scale = pfgeom::basic::point::Point2DI32::new(3, 1);
-                let origin = pfgeom::basic::point::Point2DI32::default();
-                let size = main_viewport.size().scale_xy(scale);
-                pfgeom::basic::rect::RectI32::new(origin, size)
-            }
-            _ => main_viewport,
-        }
-    }
-
-    unsafe fn draw_stencil(&self, quad_positions: &[pfgeom::basic::point::Point3DF32]) {
-        self.device.draw_stencil(quad_positions);
-    }
-
-    fn add_fills(&mut self, mut fills: &[FillBatchPrimitive]) {
-        if fills.is_empty() {
-            return;
-        }
-
-        while !fills.is_empty() {
-            let count = cmp::min(fills.len(), (MAX_FILLS_PER_BATCH - self.buffered_fills.len()) as usize);
-            self.buffered_fills.extend_from_slice(&fills[0..count]);
-            fills = &fills[count..];
-            if self.buffered_fills.len() == MAX_FILLS_PER_BATCH {
-                self.draw_buffered_fills();
-            }
-        }
-    }
-
-    fn draw_buffered_fills(&mut self) {
-        if self.buffered_fills.is_empty() {
-            return;
-        }
-
-        self.device.clear_mask_framebuffer();
-        self.device.draw_buffered_fills(&self.buffered_fills);
-
-        self.buffered_fills.clear()
-    }
-
 }
 
 #[derive(Clone, Copy)]
